@@ -499,8 +499,9 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 }</code></pre>
   </div>
 
-  <h3>Then: patching SQLite itself</h3>
-  <p>The team tried changes inside SQLite's own source and ships the two that won on the real Xeon and passed SQLite's own test suite. Each leaves the file format, the query results and the bytes written to disk identical to stock SQLite. One example: when you look up row 1,209 right after row 1,208, they're almost certainly on the same leaf page, yet stock SQLite climbs back to the root of the tree every time. The <code>btree-sameleaf</code> patch checks the leaf first.</p>
+  <h3>Then: patching SQLite itself (three tried, one ships)</h3>
+  <p>The team also tried changes inside SQLite's own source. The bar for keeping one was strict: faster on the real Xeon, the same file format, query results and bytes on disk as stock SQLite, and the same results on SQLite's own test suite. Three patches got as far as the Xeon. Only one survived to the end, and the other two are good examples of why measuring matters.</p>
+  <p>The first one: when you look up row 1,209 right after row 1,208, they're almost certainly on the same leaf page, yet stock SQLite climbs back to the root of the tree every time. The <code>btree-sameleaf</code> patch checks the leaf first.</p>
 </div>
 <figure class="wide">
   <div class="fig">
@@ -526,11 +527,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <text x="476" y="218" class="ta small">patched: "is 1,209 on this leaf? yes", search here</text>
     </svg>
   </div>
-  <figcaption>In SQLite's terms: the cursor is already on a valid leaf whose first and last row ids bracket the key, so the search starts on that page. It made the feed 15% faster on the Xeon (experiment 8).</figcaption>
+  <figcaption>In SQLite's terms: the cursor is already on a valid leaf whose first and last row ids bracket the key, so the search starts on that page. It made the feed 15% faster on the Xeon (experiment 8). Then the engine learned to walk the feed's pages itself, and from that point the patch didn't change a single instruction (123.48 vs 123.49 million per 2,000 feeds), so it was removed.</figcaption>
 </figure>
 <div class="col">
   <div class="code">
-    <div class="src"><span>explore/sqlite-patches/patches/btree-sameleaf.patch</span><span>the core of a 46-line patch to sqlite3.c</span></div>
+    <div class="src"><span>explore/sqlite-patches/patches/btree-sameleaf.patch</span><span>the core of a 46-line patch to sqlite3.c (since removed)</span></div>
 <pre><code class="language-diff">+  /* If the cursor is on a leaf whose rowids span intKey, the row (if any)
 +  ** is on this leaf: search it without going back to the root. */
 +  if( pCur-&gt;eState==CURSOR_VALID
@@ -544,7 +545,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 +  }
    rc = moveToRoot(pCur);</code></pre>
   </div>
-  <p>The other shipped patch, <code>pcache1-maxkey</code>, removes a needless scan of SQLite's page cache at every commit. A third, <code>btree-interp</code>, searches a page the way you'd look up a word in a dictionary (row 1,209 on a page of rows 1,101–1,250 is probably about 70% of the way in), rather than always halving. It was faster on the Xeon, but it failed one of SQLite's own tests: on a deliberately corrupted page with duplicate row ids, it found a different duplicate than stock SQLite does. Valid databases are unaffected, but "identical to stock" is the bar, so it's off by default and only an opt-in. Not every idea survived: putting SIMD <em>inside</em> SQLite's page search lost on the Xeon, so it was dropped.</p>
+  <p>The second, <code>btree-interp</code>, searches a page the way you'd look up a word in a dictionary (row 1,209 on a page of rows 1,101–1,250 is probably about 70% of the way in), rather than always halving. It was faster on the Xeon, but it failed one of SQLite's own tests: on a deliberately corrupted page with duplicate row ids, it found a different duplicate than stock SQLite does. Valid databases are unaffected, but "identical to stock" is the bar, so it was removed too. The one that ships, <code>pcache1-maxkey</code>, is a 12-line bookkeeping fix: after certain B-tree changes, a commit no longer scans the whole of SQLite's page cache. Other ideas didn't survive either: putting SIMD <em>inside</em> SQLite's page search lost on the Xeon, so it was dropped.</p>
 
   <h3>Saving writes: one disk write per commit</h3>
   <p>SQLite in "WAL" mode appends each changed page to a log file. It writes each page as two pieces, a 24-byte header and then the 4 KB page, so a commit that touches 10 pages makes 20 separate write calls. The server slips a thin layer between SQLite and the disk that holds the pieces in memory and sends the whole commit as <strong>one write</strong>. It knows the commit is complete because SQLite marks the last frame's header.</p>
@@ -660,6 +661,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 }</code></pre>
   </div>
   <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users (under a lighter load than the contest uses), where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, measured with the lean receive mode that's now an opt-in. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
+  <p>One more emergency valve exists but is switched off: <em>deadline shedding</em>. When on, any request that has waited too long in the kernel's queue gets an instant "overloaded" reply instead of a slow one, turning would-be tail latency into a few fast errors inside the contest's 1% error allowance. It looks only at how long the request waited, never at who sent it or what it asks for.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -725,13 +727,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Every trick has an off switch</p>
   <h2>How cursed would you like it?</h2>
-  <p>Each unusual thing the server does can be switched off when it's built, one knob at a time, or all at once with <code>CURSED=boring</code>. The boring build is by-the-book: stock SQLite, ordinary SQL queries, SQLite's own file layer and checkpoints, plain one-at-a-time login checks, and the standard picohttpparser for every request. Both builds pass the contest's 42 checks, so you can measure exactly what each trick buys.</p>
+  <p>Each unusual thing the server does can be switched off when it's built, one knob at a time, or all at once with <code>CURSED=boring</code>. The boring build is by-the-book: stock SQLite, ordinary SQL queries, SQLite's own file layer and checkpoints, plain one-at-a-time login checks, and the standard picohttpparser for every request. Both builds pass the contest's 42 checks, so you can measure exactly what each trick buys. A middle setting, <code>CURSED=lawful</code>, uses completely stock SQLite through its public API but keeps every trick outside the database.</p>
+  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the three builds used this much CPU per request: <strong>max 34 µs, lawful 41 µs, boring 44 µs</strong> (experiments 44–46, without profile-guided optimisation). So the curses, taken together, save roughly a quarter of the CPU per request, and the SQLite curses account for most of that.</p>
 </div>
 <div class="col tbl">
   <table>
     <thead><tr><th>Knob</th><th>Cursed (submitted)</th><th>Boring</th></tr></thead>
     <tbody>
-      <tr><td><code>SQLITE_PATCHES</code></td><td>two B-tree and cache patches (a third is opt-in)</td><td>stock SQLite 3.54.1</td></tr>
+      <tr><td><code>SQLITE_PATCHES</code></td><td>one page-cache patch</td><td>stock SQLite 3.54.1</td></tr>
       <tr><td><code>DB_READS</code></td><td>direct B-tree cursor reads</td><td>the spec's SQL queries</td></tr>
       <tr><td><code>DB_VFS</code></td><td>one-write-per-commit file layer</td><td>SQLite's own</td></tr>
       <tr><td><code>DB_CKPT</code></td><td>background checkpoint thread + write gate</td><td>SQLite's autocheckpoint</td></tr>
@@ -759,7 +762,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36, via the contest's own test script</span></td></tr>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36 via the contest's own test script; again for the max, lawful and boring builds (44–46)</span></td></tr>
+      <tr><td>CPU per request: cursed vs. boring build</td><td class="num">34 vs 44 µs</td><td>Xeon<span class="hw">experiments 44–46, 10,000 users at contest load, loopback; lawful 41 µs</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
       <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">3.8 ms</td><td>Xeon<span class="hw">experiment 39, 56% busy (15.8 ms at 92%, exp. 40; inline: ~99 ms)</span></td></tr>
