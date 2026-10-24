@@ -771,13 +771,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
-      <tr><td>Local users-held probes</td><td class="num">being re-run</td><td>Laptop, Docker<span class="hw">earlier probes used a lighter load than the contest's scoring load (mload think-scale 2.5 instead of 1), so their user counts don't apply; re-running at scoring load</span></td></tr>
+      <tr><td>Local probe at 300,000 users, contest load</td><td class="num">pass, p99 6 ms</td><td>Laptop, Docker<span class="hw">scoring ramp + 60 s hold, 0 errors, 1,202 MB peak; the leader also passes (p99 121 ms, 1,251 MB)</span></td></tr>
+      <tr><td>Local probe at 350,000 users, contest load</td><td class="num">1 pass, 2 fails</td><td>Laptop, Docker<span class="hw">passed once (p99 116 ms), then failed two re-runs on latency; the leader fails at 325,000 and 350,000</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>A correction along the way: the local arena's first user counts were measured under a lighter load than the contest uses. Its simulated users paused 2.5 times longer between requests, so each asked for less than half as much. Those counts have been withdrawn, and the probes are being re-run at the contest's real load.</p>
-  <div class="plain"><b>Not yet known</b>The actual score, and how many users the server holds at the contest's load. That needs the arena's re-run, then the organizer's own five-minute run. Until then, the claims stop at the table above.</div>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU and 2 GB on a laptop. At the contest's real load, both servers pass at <strong>300,000 users</strong>. Ours does it with the slowest 1% of requests under 7 ms against the leader's 121 ms. Around 350,000 ours is on the edge (one pass, two fails), while the leader already fails at 325,000. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
+  <div class="plain"><b>Not yet known</b>The actual score. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The five-minute hold, then the organizer's own run, decide it. Until then, the claims stop at the table above.</div>
 </div>
 </section>
 
