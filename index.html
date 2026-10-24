@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A guided tour, for non-experts, of cursed-http: SIMD parsing, AVX-512 JWT checks, SQLite B-tree surgery and io_uring on a $12 server.">
+<style>:root{color-scheme:light dark}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>The Cursed HTTP Tour</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@500;700&display=swap">
+<style>
+/* Layout: one reading column (~68ch) that lets figures and code break out wider; the request's journey is the spine. */
+:root {
+  --bg: #f3f4f7; --paper: #ffffff; --ink: #161a23; --muted: #596273; --line: #cbd1db;
+  --accent: #3b39cf; --accent-soft: #e4e4fb; --hot: #c96a00; --hot-soft: #fbecd9; --ok: #1d7a4c;
+  --code-bg: #eef0f5; --tk-kw: #3b39cf; --tk-str: #a24a00; --tk-com: #7a8292; --tk-num: #0f6e74; --tk-fn: #8b2c86;
+  --f-display: "Unbounded", "Avenir Next", "Segoe UI", sans-serif;
+  --f-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10131a; --paper: #171b24; --ink: #e6e9ef; --muted: #9aa3b3; --line: #2e3544;
+  --accent: #9391ff; --accent-soft: #25264a; --hot: #f2a43c; --hot-soft: #3a2a14; --ok: #4fc58a;
+  --code-bg: #1b202b; --tk-kw: #a4a2ff; --tk-str: #f0b46a; --tk-com: #7d8698; --tk-num: #5fd0d6; --tk-fn: #e48ee0;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #10131a; --paper: #171b24; --ink: #e6e9ef; --muted: #9aa3b3; --line: #2e3544;
+  --accent: #9391ff; --accent-soft: #25264a; --hot: #f2a43c; --hot-soft: #3a2a14; --ok: #4fc58a;
+  --code-bg: #1b202b; --tk-kw: #a4a2ff; --tk-str: #f0b46a; --tk-com: #7d8698; --tk-num: #5fd0d6; --tk-fn: #e48ee0;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.62 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 1000px; margin: 0 auto; padding-block: 40px 80px; display: grid; gap: 0; }
+.col { max-width: 68ch; width: 100%; margin: 0 auto; }
+h1, h2 { font-family: var(--f-display); font-weight: 700; line-height: 1.15; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2.1rem, 6vw, 3.6rem); margin: 0 0 18px; }
+h2 { font-size: clamp(1.35rem, 3.2vw, 1.9rem); margin: 0 0 14px; }
+h3 { font-size: 1.12rem; margin: 30px 0 8px; text-wrap: balance; }
+p { margin: 0 0 14px; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+strong { font-weight: 700; }
+code { font-family: var(--f-mono); font-size: 0.86em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.eyebrow { font: 600 0.74rem/1 var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin: 0 0 12px; }
+.lede { font-size: 1.2rem; color: var(--muted); max-width: 60ch; }
+
+/* hero */
+.hero { padding-block: 24px 36px; border-bottom: 1px solid var(--line); margin-bottom: 40px; }
+.specs { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 26px; font: 0.86rem/1.4 var(--f-mono); color: var(--muted); }
+.specs b { display: block; color: var(--ink); font-size: 1.05rem; font-weight: 600; }
+
+/* stage sections */
+section { padding-block: 44px 8px; }
+.stage-tag { display: inline-flex; align-items: center; gap: 10px; font: 600 0.78rem/1 var(--f-mono); color: var(--muted); margin-bottom: 10px; letter-spacing: 0.04em; }
+.stage-tag i { font-style: normal; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--paper); font-size: 0.8rem; }
+.plain { border-left: 3px solid var(--hot); background: var(--hot-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 18px 0; }
+.plain b { font-family: var(--f-mono); font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--hot); display: block; margin-bottom: 4px; }
+
+/* figures */
+figure { margin: 26px 0; }
+.fig { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 18px; overflow-x: auto; }
+.fig svg { display: block; width: 100%; min-width: 620px; height: auto; color: var(--ink); }
+figcaption { font-size: 0.9rem; color: var(--muted); margin-top: 10px; max-width: 75ch; }
+.wide { max-width: 1000px; width: 100%; margin-left: auto; margin-right: auto; }
+svg text { font-family: var(--f-body); font-size: 13px; fill: currentColor; }
+svg .mono { font-family: var(--f-mono); font-size: 12px; }
+svg .mu { fill: var(--muted); }
+svg .small { font-size: 11.5px; }
+svg .ttl { font-weight: 700; font-size: 14px; }
+svg .box { fill: var(--paper); stroke: var(--line); stroke-width: 1.5; }
+svg .box-a { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+svg .box-h { fill: var(--hot-soft); stroke: var(--hot); stroke-width: 1.5; }
+svg .ln { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+svg .ln-a { stroke: var(--accent); stroke-width: 2.2; fill: none; }
+svg .ln-h { stroke: var(--hot); stroke-width: 2.2; fill: none; }
+svg .dash { stroke-dasharray: 5 4; }
+svg .fa { fill: var(--accent); } svg .fh { fill: var(--hot); } svg .fm { fill: var(--muted); } svg .fl { fill: var(--line); }
+svg .ta { fill: var(--accent); } svg .th { fill: var(--hot); }
+
+/* code */
+.code { position: relative; margin: 20px 0; }
+.code .src { font: 600 0.72rem/1 var(--f-mono); color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font: 0.8rem/1.55 var(--f-mono); tab-size: 4; }
+pre code { background: none; padding: 0; font-size: inherit; }
+.token.comment, .token.prolog { color: var(--tk-com); font-style: italic; }
+.token.keyword, .token.directive, .token.macro .token.directive-hash { color: var(--tk-kw); font-weight: 600; }
+.token.string, .token.char { color: var(--tk-str); }
+.token.number, .token.boolean, .token.constant { color: var(--tk-num); }
+.token.function { color: var(--tk-fn); }
+.token.macro { color: var(--tk-com); }
+.token.inserted { color: var(--ok); }
+.token.deleted { color: var(--hot); }
+.token.property { color: var(--tk-kw); }
+.note { font-size: 0.86rem; color: var(--muted); margin-top: 6px; }
+
+/* journey nav */
+.journey { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 26px 0 8px; padding: 0; list-style: none; counter-reset: s; }
+.journey a { display: block; text-decoration: none; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 0.92rem; line-height: 1.3; height: 100%; }
+.journey a:hover { border-color: var(--accent); }
+.journey span { display: block; font: 600 0.7rem/1 var(--f-mono); color: var(--accent); margin-bottom: 5px; letter-spacing: 0.06em; }
+
+/* demos */
+.demo { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 24px 0; }
+.demo h4 { margin: 0 0 4px; font-size: 1rem; }
+.demo .hint { font-size: 0.88rem; color: var(--muted); margin: 0 0 12px; }
+.demo label { font-size: 0.85rem; color: var(--muted); display: block; margin-bottom: 6px; }
+.demo textarea { width: 100%; font: 0.85rem/1.5 var(--f-mono); background: var(--code-bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 10px; resize: vertical; }
+.bytes { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 3px; margin: 14px 0 10px; max-width: 640px; }
+.bytes div { font: 0.78rem/1 var(--f-mono); text-align: center; padding: 7px 0 5px; border-radius: 4px; background: var(--code-bg); color: var(--muted); border: 1px solid transparent; }
+.bytes div.hit { background: var(--accent); color: var(--paper); font-weight: 600; }
+.bytes div.pad { opacity: 0.45; }
+.mask { font: 0.82rem/1.5 var(--f-mono); word-break: break-all; }
+.mask b { color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: baseline; }
+input[type="range"] { width: 100%; max-width: 520px; accent-color: var(--accent); }
+.meter { height: 26px; border-radius: 6px; background: var(--code-bg); border: 1px solid var(--line); position: relative; overflow: hidden; max-width: 640px; margin: 6px 0 4px; }
+.meter i { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width .2s; }
+.meter i.over { background: var(--hot); }
+.meter .wall { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); }
+.readout { font: 0.86rem/1.5 var(--f-mono); font-variant-numeric: tabular-nums; }
+.readout b { font-weight: 600; }
+.pill { display: inline-block; font: 600 0.72rem/1 var(--f-mono); padding: 4px 8px; border-radius: 99px; }
+.pill.ok { background: var(--accent-soft); color: var(--accent); }
+.pill.bad { background: var(--hot-soft); color: var(--hot); }
+
+/* results */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); margin: 20px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; min-width: 560px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 0.72rem/1.2 var(--f-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 700; }
+td .hw { display: block; font-size: 0.78rem; color: var(--muted); font-family: var(--f-mono); }
+footer { border-top: 1px solid var(--line); margin-top: 50px; padding-top: 24px; font-size: 0.9rem; color: var(--muted); }
+dl.gloss { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 0.92rem; margin: 10px 0 0; }
+dl.gloss dt { font-family: var(--f-mono); font-weight: 600; font-size: 0.85rem; padding-top: 2px; }
+dl.gloss dd { margin: 0; color: var(--muted); }
+@media (max-width: 560px) { dl.gloss { grid-template-columns: 1fr; } dl.gloss dd { margin-bottom: 8px; } body { font-size: 16px; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+</style>
+
+</head>
+<body>
+<main>
+
+<header class="hero">
+  <div class="col" style="max-width:none">
+    <p class="eyebrow">cursed-http · a guided tour</p>
+    <h1>Trying to serve 500,000 people from a $12 computer by doing everything the hard way</h1>
+    <p class="lede">A walkthrough, for curious non-experts, of a web server built for a speed contest. It uses every trick its authors could justify, and a few they mostly built because they could.</p>
+    <div class="specs" aria-label="The machine">
+      <div><b>1 CPU core</b>Intel Xeon Platinum 8260</div>
+      <div><b>2 GB</b>of memory, no swap</div>
+      <div><b>$12</b>a month</div>
+      <div><b>p99 &lt; 1 s</b>or you're out</div>
+    </div>
+  </div>
+</header>
+
+<div class="col">
+  <p class="eyebrow">The game</p>
+  <h2>One small box, as many users as it can carry</h2>
+  <p>The <a href="https://github.com/arjaythedev/twelve-dollar-server-challenge">$12 server challenge</a> asks everyone to build the same tiny social network: a feed of posts, the ability to read one post, like it, and write a new one, with logins checked on every write. Everyone gets the same cheap rented machine.</p>
+  <p>Then the organizer points a crowd of simulated users at it. Each one scrolls the feed, opens a post, sometimes likes it, rarely writes one, and pauses to "read" in between. The crowd grows until the server cracks. Your score is <strong>the largest crowd the server holds for five minutes</strong> while three things stay true:</p>
+  <ul>
+    <li>95% of requests answered in under half a second,</li>
+    <li>99% answered in under one second,</li>
+    <li>fewer than 1% of requests fail.</li>
+  </ul>
+  <p>That's the only number that counts. Not elegance, not requests per second. Every decision on this page was judged by one question: <em>does it let us hold more users?</em></p>
+
+  <div class="plain"><b>In plain terms</b>Each user only asks for something about once every 24 seconds, so the goal of 500,000 users is about 21,000 requests a second. One core has to deal with each in roughly 47 millionths of a second (µs), on average, forever.</div>
+</div>
+
+<div class="col">
+  <h3>Where the time actually goes</h3>
+  <p>You might guess the hard part is the "thinking": reading the request, checking the login, querying the database. Measured on the real Xeon, it mostly isn't. Most of each request's time is the operating system shuffling network packets.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 190" role="img" aria-label="Bar to scale: of 32.2 microseconds of server CPU per request, the database takes about 6.8, parsing and login checks are each well under one tenth of a microsecond, and everything else, mainly kernel networking, is about 25.">
+      <text x="20" y="28" class="ttl">32.2 µs of server CPU per request, drawn to scale</text>
+      <rect x="20" y="52" width="920" height="46" rx="6" class="fl"/>
+      <rect x="20" y="52" width="194" height="46" rx="6" class="fa"/>
+      <rect x="214" y="52" width="2" height="46" class="fh"/>
+      <text x="117" y="81" text-anchor="middle" style="fill:var(--paper);font-weight:700">database 6.8</text>
+      <text x="580" y="81" text-anchor="middle">event loop, building replies, and mostly the kernel's networking ≈ 25</text>
+      <line x1="215" y1="98" x2="215" y2="132" class="ln-h"/>
+      <text x="224" y="128" class="th">HTTP parsing 0.04 µs and login checks ≈ 0.05 µs on average live in this hairline</text>
+      <line x1="20" y1="160" x2="940" y2="160" class="ln"/>
+      <line x1="20" y1="155" x2="20" y2="165" class="ln"/><text x="20" y="182" class="mu small">0</text>
+      <line x1="306" y1="155" x2="306" y2="165" class="ln"/><text x="306" y="182" class="mu small" text-anchor="middle">10 µs</text>
+      <line x1="591" y1="155" x2="591" y2="165" class="ln"/><text x="591" y="182" class="mu small" text-anchor="middle">20 µs</text>
+      <line x1="877" y1="155" x2="877" y2="165" class="ln"/><text x="877" y="182" class="mu small" text-anchor="middle">30 µs</text>
+    </svg>
+  </div>
+  <figcaption>The whole-request number and the database share are measured on the rented Xeon test box (experiments 26 and 16). Parsing and login costs come from separate benchmarks on the same box. Only about 1 request in 13 carries a login, so its average cost is tiny.</figcaption>
+</figure>
+<div class="col">
+  <p>So why make parsing 3× faster, if it was never the bottleneck? Partly because the project's brief was "maximally cursed", and partly because each nanosecond saved is free. The real wins, though, come from the parts that move the big bar: how the server talks to the kernel, how it touches the database, and how much <strong>memory</strong> each user costs. Memory turns out to be the wall that matters most.</p>
+</div>
+
+<div class="col">
+  <p class="eyebrow" style="margin-top:34px">The journey of a request</p>
+  <h2>Follow one request through the server</h2>
+  <p>The server is one program running on one thread. It never handles requests one at a time. Every time it wakes up, it grabs <em>everything</em> that has arrived (up to 128 requests or 2 ms of waiting) and pushes the whole batch through five stages together.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 250" role="img" aria-label="Pipeline: requests from many connections are collected into one batch, then parsed, authenticated, run against the database in one transaction, and only after the commit are replies sent.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fm"/></marker>
+        <marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fa"/></marker>
+      </defs>
+      <!-- connections -->
+      <text x="20" y="30" class="mu small">many users' connections</text>
+      <g class="mono">
+        <rect x="20" y="44" width="110" height="24" rx="5" class="box"/><text x="30" y="60">GET /feed</text>
+        <rect x="20" y="76" width="110" height="24" rx="5" class="box"/><text x="30" y="92">GET /posts/7</text>
+        <rect x="20" y="108" width="110" height="24" rx="5" class="box-h"/><text x="30" y="124">POST /like</text>
+        <rect x="20" y="140" width="110" height="24" rx="5" class="box"/><text x="30" y="156">GET /feed</text>
+        <rect x="20" y="172" width="110" height="24" rx="5" class="box"/><text x="30" y="188">GET /posts/9</text>
+      </g>
+      <path d="M134,120 L168,120" class="ln" marker-end="url(#ar)"/>
+      <!-- stages -->
+      <g>
+        <rect x="172" y="84" width="128" height="72" rx="10" class="box-a"/>
+        <text x="236" y="114" text-anchor="middle" class="ttl">1 Receive</text><text x="236" y="134" text-anchor="middle" class="mu small">io_uring</text>
+        <path d="M300,120 L326,120" class="ln" marker-end="url(#ar)"/>
+        <rect x="330" y="84" width="128" height="72" rx="10" class="box-a"/>
+        <text x="394" y="114" text-anchor="middle" class="ttl">2 Parse</text><text x="394" y="134" text-anchor="middle" class="mu small">SIMD, many at once</text>
+        <path d="M458,120 L484,120" class="ln" marker-end="url(#ar)"/>
+        <rect x="488" y="84" width="128" height="72" rx="10" class="box-a"/>
+        <text x="552" y="114" text-anchor="middle" class="ttl">3 Log-in check</text><text x="552" y="134" text-anchor="middle" class="mu small">8 tokens per instruction</text>
+        <path d="M616,120 L642,120" class="ln" marker-end="url(#ar)"/>
+        <rect x="646" y="84" width="128" height="72" rx="10" class="box-a"/>
+        <text x="710" y="114" text-anchor="middle" class="ttl">4 Database</text><text x="710" y="134" text-anchor="middle" class="mu small">one transaction</text>
+        <path d="M774,120 L800,120" class="ln-a" marker-end="url(#ara)"/>
+        <rect x="804" y="84" width="136" height="72" rx="10" class="box-a"/>
+        <text x="872" y="114" text-anchor="middle" class="ttl">5 Reply</text><text x="872" y="134" text-anchor="middle" class="mu small">maybe "close"</text>
+      </g>
+      <text x="787" y="76" text-anchor="middle" class="ta small">COMMIT first</text>
+      <!-- batch bracket -->
+      <path d="M172,190 L172,200 L940,200 L940,190" class="ln"/>
+      <text x="556" y="224" text-anchor="middle" class="mu">the whole batch moves through each stage together, up to 128 requests per wake-up</text>
+    </svg>
+  </div>
+  <figcaption>Batching is the theme that ties everything together. It lets the parser and the login check work on many requests in one go, and it lets the database save all of a batch's writes with one commit. No reply leaves until that commit is safely on disk, which is one of the contest's rules.</figcaption>
+</figure>
+
+<nav class="col" aria-label="Stages">
+  <ol class="journey">
+    <li><a href="#receive"><span>STAGE 1</span>Receive: io_uring</a></li>
+    <li><a href="#parse"><span>STAGE 2</span>Parse: SIMD</a></li>
+    <li><a href="#auth"><span>STAGE 3</span>Log-in: 8 at once</a></li>
+    <li><a href="#db"><span>STAGE 4</span>Database surgery</a></li>
+    <li><a href="#reply"><span>STAGE 5</span>Reply and the memory wall</a></li>
+    <li><a href="#broker"><span>BEHIND THE SCENES</span>The Xeon broker</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ STAGE 1 -->
+<section id="receive">
+<div class="col">
+  <div class="stage-tag"><i>1</i>RECEIVE</div>
+  <h2>Talking to the kernel without knocking on its door</h2>
+  <p>A program can't touch the network card itself. It has to ask the operating system's kernel: "anything new on connection 4,071?", "please send these bytes". Each ask is a <em>system call</em>. That's a trip across a security boundary, and it costs far more than ordinary code. With 300,000 connections, a classic server makes millions of those trips a second.</p>
+  <p><strong>io_uring</strong> is a newer Linux feature that replaces the knocking with two shared mailboxes. The program drops requests into one ring ("receive on all of these", "send this"), and the kernel drops finished results into the other. One system call can hand over hundreds of jobs, and sometimes none is needed at all.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 270" role="img" aria-label="Comparison: on the left, a classic server makes one system call per operation across the kernel boundary. On the right, io_uring uses a submission ring and a completion ring in shared memory, with one system call for a whole batch.">
+      <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fm"/></marker>
+      <marker id="ar2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fa"/></marker></defs>
+      <text x="20" y="26" class="ttl">Classic: one trip per operation</text>
+      <rect x="20" y="44" width="400" height="56" rx="8" class="box"/><text x="220" y="77" text-anchor="middle">your program</text>
+      <line x1="20" y1="140" x2="420" y2="140" class="ln dash"/><text x="424" y="144" class="mu small">kernel boundary</text>
+      <rect x="20" y="180" width="400" height="56" rx="8" class="box"/><text x="220" y="213" text-anchor="middle">kernel (network stack)</text>
+      <g>
+        <path d="M60,102 L60,176" class="ln-h" marker-end="url(#ar2)"/><text x="66" y="128" class="mono small th">read()</text>
+        <path d="M140,102 L140,176" class="ln-h" marker-end="url(#ar2)"/><text x="146" y="128" class="mono small th">read()</text>
+        <path d="M220,102 L220,176" class="ln-h" marker-end="url(#ar2)"/><text x="226" y="128" class="mono small th">write()</text>
+        <path d="M300,102 L300,176" class="ln-h" marker-end="url(#ar2)"/><text x="306" y="128" class="mono small th">read()</text>
+        <path d="M380,102 L380,176" class="ln-h" marker-end="url(#ar2)"/><text x="386" y="128" class="mono small th">…</text>
+      </g>
+      <text x="520" y="26" class="ttl">io_uring: two shared mailboxes</text>
+      <rect x="520" y="44" width="420" height="56" rx="8" class="box"/><text x="730" y="77" text-anchor="middle">your program</text>
+      <line x1="520" y1="140" x2="940" y2="140" class="ln dash"/>
+      <rect x="520" y="180" width="420" height="56" rx="8" class="box"/><text x="730" y="213" text-anchor="middle">kernel (network stack)</text>
+      <rect x="560" y="118" width="150" height="44" rx="8" class="box-a"/><text x="635" y="137" text-anchor="middle" class="small">submission ring</text><text x="635" y="153" text-anchor="middle" class="mono small mu">recv, send, accept…</text>
+      <rect x="750" y="118" width="150" height="44" rx="8" class="box-a"/><text x="825" y="137" text-anchor="middle" class="small">completion ring</text><text x="825" y="153" text-anchor="middle" class="mono small mu">results</text>
+      <path d="M600,102 L600,116" class="ln-a" marker-end="url(#ar2a)"/><path d="M635,164 L635,178" class="ln-a" marker-end="url(#ar2a)"/>
+      <path d="M825,178 L825,164" class="ln-a" marker-end="url(#ar2a)"/><path d="M860,116 L860,102" class="ln-a" marker-end="url(#ar2a)"/>
+      <text x="730" y="258" text-anchor="middle" class="mu small">hundreds of operations per system call; the rings live in memory both sides can see</text>
+    </svg>
+  </div>
+  <figcaption>Most of the per-request cost is still the kernel's own TCP work, but io_uring removes the trips themselves.</figcaption>
+</figure>
+<div class="col">
+  <h3>The 65,535 problem, and the multi-ring trick</h3>
+  <p>The contest machine limits each program to 65,535 open files, and on Linux every network connection normally counts as a file. That would cap the server at about 65,000 users, far short of the 500,000 goal.</p>
+  <p>io_uring has an escape hatch called <strong>direct descriptors</strong>: connections that live only inside a ring's private table and never become ordinary files. Each ring's table also tops out at 65,535, so the server simply runs <em>several rings</em> and adds another whenever the current ones fill up. Here's the code that asks the kernel to accept a new connection straight into a free slot of a ring's table:</p>
+  <div class="code">
+    <div class="src"><span>explore/io/loop.c</span><span>raw io_uring, no helper library</span></div>
+<pre><code class="language-c">static void arm_accept(loop_t *L, int ri, int multi)
+{
+    ring_t *r = &amp;L-&gt;rings[ri];
+    struct io_uring_sqe *s = get_sqe(L, r);      // a free slot in the submission ring
+    s-&gt;opcode = IORING_OP_ACCEPT;
+    s-&gt;fd = L-&gt;lfd;                              // the listening socket
+    s-&gt;ioprio = multi ? IORING_ACCEPT_MULTISHOT : 0;
+    s-&gt;file_index = IORING_FILE_INDEX_ALLOC;     // "put it in your own table, not in the file table"
+    s-&gt;user_data = ud_mk(OP_ACCEPT, (unsigned)ri, multi ? 0 : 1, 0);
+    if (multi) { r-&gt;accepting = 1; L-&gt;acc_ring = ri; }
+    else r-&gt;singles++;
+}</code></pre>
+  </div>
+  <p>Receiving uses the same idea. One "multishot" receive per connection stays armed, so the kernel keeps dropping each new request into a shared pool of buffers without being asked again. The server keeps 256 accepts in flight because, on this kernel version, the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
+</div>
+</section>
+
+<!-- ============================================================ STAGE 2 -->
+<section id="parse">
+<div class="col">
+  <div class="stage-tag"><i>2</i>PARSE</div>
+  <h2>Reading 64 letters in one step</h2>
+  <p>A request arrives as plain text: a line like <code>GET /posts/42 HTTP/1.1</code>, then a few header lines such as <code>Authorization: Bearer …</code>, each ending in an invisible line-break. The usual way to read it is letter by letter: is this a line-break? no. This one? no…</p>
+  <p>Modern CPUs have <strong>SIMD</strong> instructions (Single Instruction, Multiple Data). One instruction loads 32 or 64 letters into a wide register and compares <em>all of them</em> against a line-break at once. The answer comes back as a <strong>bitmask</strong>, one bit per letter, with a 1 wherever there's a match. Finding the next line is then just "where's the next 1 bit?", which is itself a single instruction.</p>
+</div>
+<div class="col">
+  <div class="demo" id="simd-demo">
+    <h4>Try it: the line-break mask</h4>
+    <p class="hint">Edit the request. Each box is one byte of the first 64. The highlighted ones are the line-breaks (<code>\n</code>) that a single compare finds in one go.</p>
+    <label for="req-in">Request text</label>
+    <textarea id="req-in" rows="4" spellcheck="false">GET /posts/42 HTTP/1.1
+Host: api.example
+Authorization: Bearer eyJhbGciOi</textarea>
+    <div class="bytes" id="bytes" aria-hidden="true"></div>
+    <div class="mask" id="mask-out" aria-live="polite"></div>
+  </div>
+</div>
+<div class="col">
+  <p>Here's the real version for Intel's AVX2 instructions. It loads two 32-byte chunks, compares every byte against <code>'\n'</code>, and squeezes the results into one 64-bit mask, exactly like the demo above:</p>
+  <div class="code">
+    <div class="src"><span>explore/parser/http.h</span><span>also has AVX-512, ARM NEON and plain-C versions</span></div>
+<pre><code class="language-c">FP_INLINE uint64_t fp_lf64_simd(const char *p) {
+  const __m256i LF = _mm256_set1_epi8('\n');                     // 32 copies of '\n'
+  __m256i v0 = _mm256_loadu_si256((const void *)p),               // bytes 0..31
+          v1 = _mm256_loadu_si256((const void *)(p + 32));        // bytes 32..63
+  return fp_mm2(_mm256_cmpeq_epi8(v0, LF), _mm256_cmpeq_epi8(v1, LF));   // 64 compares -&gt; 64 bits
+}</code></pre>
+  </div>
+  <p>There's a second twist: the parser isn't hand-written. A script <strong>generates it from the API's own specification</strong>, so it knows the handful of request shapes this API can receive and recognises each from its first few bytes. Anything unusual (an old HTTP version, odd headers) falls back to a slower general-purpose parser. That one is SIMD too, and it gives identical answers to the well-known <code>picohttpparser</code> on every input the team could throw at it.</p>
+  <p>Result on the Xeon: <strong>37 nanoseconds</strong> per request, against 107 for picohttpparser with the same routing on top.</p>
+
+  <h3>The really cursed bit: parsing different people's requests side by side</h3>
+  <p>SIMD normally speeds up <em>one</em> long piece of text. But each request is short, and a batch holds dozens of them from different users. So the "lane-parallel" parser turns the problem sideways: it puts one request from each of 4 or 8 connections into the lanes of a single register, and parses them all with the same instructions.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 230" role="img" aria-label="Lane-parallel parsing: the first bytes of four requests from four different connections are loaded into four lanes of one register, and one instruction compares all four against every known route at once.">
+      <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fa"/></marker></defs>
+      <text x="20" y="26" class="ttl">Four connections' requests</text>
+      <g class="mono">
+        <text x="20" y="62" class="mu small">alice</text><rect x="80" y="46" width="300" height="24" rx="4" class="box"/><text x="90" y="62">GET /feed HTTP/1.1↵Host…</text>
+        <text x="20" y="96" class="mu small">bob</text><rect x="80" y="80" width="300" height="24" rx="4" class="box"/><text x="90" y="96">GET /posts/1209 HTTP/1.1↵…</text>
+        <text x="20" y="130" class="mu small">chen</text><rect x="80" y="114" width="300" height="24" rx="4" class="box"/><text x="90" y="130">POST /posts/88/like HTTP…</text>
+        <text x="20" y="164" class="mu small">dara</text><rect x="80" y="148" width="300" height="24" rx="4" class="box"/><text x="90" y="164">GET /posts/7 HTTP/1.1↵A…</text>
+      </g>
+      <path d="M390,110 L470,110" class="ln-a" marker-end="url(#ar3)"/><text x="430" y="100" text-anchor="middle" class="ta small">gather</text>
+      <text x="480" y="26" class="ttl">One register, four lanes</text>
+      <rect x="480" y="46" width="200" height="126" rx="8" class="box-a"/>
+      <g class="mono small"><text x="494" y="68">lane 0: GET /feed HTT</text><text x="494" y="100">lane 1: GET /posts/120</text><text x="494" y="132">lane 2: POST /posts/88</text><text x="494" y="164">lane 3: GET /posts/7 H</text></g>
+      <line x1="480" y1="78" x2="680" y2="78" class="ln"/><line x1="480" y1="110" x2="680" y2="110" class="ln"/><line x1="480" y1="142" x2="680" y2="142" class="ln"/>
+      <path d="M690,110 L760,110" class="ln-a" marker-end="url(#ar3)"/>
+      <rect x="770" y="66" width="170" height="88" rx="8" class="box"/>
+      <text x="855" y="92" text-anchor="middle" class="small">one compare against</text><text x="855" y="110" text-anchor="middle" class="small">every known route,</text><text x="855" y="128" text-anchor="middle" class="small">for all four at once</text>
+      <text x="480" y="204" class="mu small">then the post ids of all lanes are converted to numbers together, again in one pass</text>
+    </svg>
+  </div>
+  <figcaption>The trick uses a "gather" instruction whose addresses are the four requests' own memory locations. It's 4–7% faster than parsing them one after another when a batch holds 8 or more connections (Xeon, experiment 25), so the server switches it on there. It saves about 2 nanoseconds per request: this one is for the cursedness.</figcaption>
+</figure>
+<div class="col">
+  <div class="code">
+    <div class="src"><span>explore/batch-parse/bp.h</span><span>the whole contract in two lines</span></div>
+<pre><code class="language-c">const char *buf[n]; int len[n];  req_t out[n]; int ret[n];
+bp_parse(n, buf, len, out, ret);    // ret[i] = fast_parse(buf[i], len[i], &amp;out[i]), any n &gt;= 0</code></pre>
+  </div>
+  <p>Every lane must return <em>exactly</em> what the one-at-a-time parser returns. A test build checks that live: 165,004 real requests compared lane by lane, with zero mismatches.</p>
+</div>
+</section>
+
+<!-- ============================================================ STAGE 3 -->
+<section id="auth">
+<div class="col">
+  <div class="stage-tag"><i>3</i>LOG-IN CHECK</div>
+  <h2>Checking eight signatures with one set of instructions</h2>
+  <p>Liking a post or writing one requires a login token, a <strong>JWT</strong>. It's a short string that says "this is user 1234, valid until Tuesday", followed by a cryptographic signature. To check it, the server recomputes the signature with a secret key (a calculation called <strong>HMAC-SHA256</strong>) and compares. The rules forbid caching the answer: every request's token is checked from scratch.</p>
+  <p>SHA-256 is 64 rounds of adding, rotating and mixing 32-bit numbers. One message can't be split across lanes, because each round needs the previous one. But eight <em>different</em> messages can each take a lane. That's <strong>multi-buffer</strong> hashing: the server gathers every token in the batch and runs them through the rounds side by side, one token per 32-bit lane of an AVX-512 register.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 200" role="img" aria-label="Multi-buffer hashing: eight tokens each occupy one 32-bit lane of a 256-bit register, and each of SHA-256's 64 rounds runs once for all eight.">
+      <text x="20" y="26" class="ttl">One 256-bit register = eight 32-bit lanes = eight tokens</text>
+      <g>
+        <rect x="20" y="44" width="110" height="40" rx="6" class="box-a"/><text x="75" y="69" text-anchor="middle" class="mono small">token A</text>
+        <rect x="134" y="44" width="110" height="40" rx="6" class="box-a"/><text x="189" y="69" text-anchor="middle" class="mono small">token B</text>
+        <rect x="248" y="44" width="110" height="40" rx="6" class="box-a"/><text x="303" y="69" text-anchor="middle" class="mono small">token C</text>
+        <rect x="362" y="44" width="110" height="40" rx="6" class="box-a"/><text x="417" y="69" text-anchor="middle" class="mono small">token D</text>
+        <rect x="476" y="44" width="110" height="40" rx="6" class="box-a"/><text x="531" y="69" text-anchor="middle" class="mono small">token E</text>
+        <rect x="590" y="44" width="110" height="40" rx="6" class="box-a"/><text x="645" y="69" text-anchor="middle" class="mono small">token F</text>
+        <rect x="704" y="44" width="110" height="40" rx="6" class="box-a"/><text x="759" y="69" text-anchor="middle" class="mono small">token G</text>
+        <rect x="818" y="44" width="122" height="40" rx="6" class="box-a"/><text x="879" y="69" text-anchor="middle" class="mono small">token H</text>
+      </g>
+      <path d="M20,100 L940,100" class="ln-a"/>
+      <text x="480" y="126" text-anchor="middle">round 1 … round 64: each "add", "rotate", "mix" instruction acts on all eight lanes</text>
+      <path d="M20,146 L940,146" class="ln-a"/>
+      <text x="480" y="176" text-anchor="middle" class="mu small">8 signatures out → each compared with the token's own signature → accept or 401</text>
+    </svg>
+  </div>
+  <figcaption>The same template code is compiled four times: plain C, ARM NEON, AVX2, and AVX-512. Because the authors' laptop can't run AVX-512, that version is "tested by construction" against the plain-C one, then confirmed on the real Xeon: 139,510 checks passed.</figcaption>
+</figure>
+<div class="col">
+  <p>Below is one SHA-256 round. <code>V</code> is "a vector of 8 numbers", so every <code>VADD</code> or <code>VROR</code> is one instruction doing eight lanes' worth of work. The identical source becomes the plain-C version when <code>V</code> is just a single number.</p>
+  <div class="code">
+    <div class="src"><span>explore/jwt/jwt_mb.inc</span><span>one round, for every lane at once</span></div>
+<pre><code class="language-c">#define MB_RND(a, b, c, d, e, f, g, h, t, wt)                                    \
+    do {                                                                         \
+        V t1 = VADD(VADD(VADD(h, VXOR3(VROR(e, 6), VROR(e, 11), VROR(e, 25))),   \
+                         VADD(VCH(e, f, g), VSET1(K256[t]))), (wt));             \
+        V t2 = VADD(VXOR3(VROR(a, 2), VROR(a, 13), VROR(a, 22)), VMAJ(a, b, c)); \
+        d = VADD(d, t1);                                                         \
+        h = VADD(t1, t2);                                                        \
+    } while (0)</code></pre>
+  </div>
+  <p>A practical detail: this Xeon slows its clock when code uses the full 512-bit registers heavily, so the shipped version uses AVX-512's new instructions on 256-bit registers instead. The 512-bit variant was measured, and rejected.</p>
+  <p>On the Xeon, with a typical batch of three tokens: <strong>608 ns per token</strong>, against 6,201 ns for the C++ library jwt-cpp and 8,739 ns for Go's popular golang-jwt.</p>
+</div>
+</section>
+
+<!-- ============================================================ STAGE 4 -->
+<section id="db">
+<div class="col">
+  <div class="stage-tag"><i>4</i>DATABASE</div>
+  <h2>Skipping SQL and operating on SQLite directly</h2>
+  <p>The contest requires the data to live in <strong>SQLite</strong>, the small database inside most phones and browsers. Normally you hand SQLite a sentence in the SQL language. SQLite parses it, plans how to run it, compiles it into its own little bytecode, and runs that on its storage engine, a <strong>B-tree</strong>: a sorted tree of 4 KB pages where finding any row takes only a few hops from the top.</p>
+  <p>This server skips most of that. The "feed" and "get a post" reads are compiled into the same program as SQLite itself, and they call SQLite's internal B-tree functions directly.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 280" role="img" aria-label="Comparison: the normal path goes through SQL text, the parser, the planner, bytecode and the virtual machine before reaching the B-tree. The cursed path calls SQLite's own B-tree cursor functions directly. Both read the same file.">
+      <defs><marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fm"/></marker>
+      <marker id="ar4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fa"/></marker></defs>
+      <text x="20" y="26" class="ttl">The normal way</text>
+      <g>
+        <rect x="20" y="40" width="140" height="44" rx="8" class="box"/><text x="90" y="60" text-anchor="middle" class="small">SQL text</text><text x="90" y="75" text-anchor="middle" class="mono small mu">SELECT … JOIN …</text>
+        <path d="M160,62 L184,62" class="ln" marker-end="url(#ar4)"/>
+        <rect x="188" y="40" width="120" height="44" rx="8" class="box"/><text x="248" y="67" text-anchor="middle" class="small">parse + plan</text>
+        <path d="M308,62 L332,62" class="ln" marker-end="url(#ar4)"/>
+        <rect x="336" y="40" width="130" height="44" rx="8" class="box"/><text x="401" y="67" text-anchor="middle" class="small">bytecode VM</text>
+        <path d="M466,62 L560,62 L560,170" class="ln" marker-end="url(#ar4)"/>
+      </g>
+      <text x="20" y="140" class="ttl ta">The cursed way</text>
+      <rect x="20" y="152" width="300" height="44" rx="8" class="box-a"/><text x="170" y="172" text-anchor="middle" class="small">our engine, compiled into SQLite</text><text x="170" y="187" text-anchor="middle" class="mono small mu">sqlite3BtreeIndexMoveto(…)</text>
+      <path d="M320,174 L496,174" class="ln-a" marker-end="url(#ar4a)"/>
+      <text x="408" y="166" text-anchor="middle" class="ta small">direct cursor calls</text>
+      <rect x="500" y="174" width="140" height="44" rx="8" class="box"/><text x="570" y="201" text-anchor="middle" class="small">B-tree</text>
+      <path d="M640,196 L664,196" class="ln" marker-end="url(#ar4)"/>
+      <rect x="668" y="174" width="272" height="44" rx="8" class="box"/><text x="804" y="194" text-anchor="middle" class="small">the same feed.db file</text><text x="804" y="209" text-anchor="middle" class="mono small mu">4 KB pages, same format</text>
+      <text x="20" y="252" class="mu small">Writes still go through ordinary prepared SQL. Only the hot reads take the shortcut, and they're checked against the official SQL on all 500,000 posts.</text>
+    </svg>
+  </div>
+  <figcaption>On the Xeon, the direct feed is about 2.9× faster than the spec's SQL query.</figcaption>
+</figure>
+<div class="col">
+  <p>For example, a feed needs the like count of 20 posts. Instead of 20 separate counting queries, the engine positions one cursor at the lowest post id in the "likes by post" index and walks forward once, tallying as it goes:</p>
+  <div class="code">
+    <div class="src"><span>explore/db/engine.c</span><span>trimmed: the fast cell-walking variant is left out</span></div>
+<pre><code class="language-c">// Counts likes for post ids in [lo, hi] with one likes_post_id_idx range scan.
+static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
+  BtCursor *c = rcur(e, C_L); if (!c) return -1;
+  UnpackedRecord *r = e-&gt;uk_lpid; int res;
+  r-&gt;nField = 1; r-&gt;default_rc = +1; r-&gt;eqSeen = 0; r-&gt;errCode = 0;
+  r-&gt;aMem[0].flags = MEM_Int; r-&gt;aMem[0].u.i = lo;            // search key: post id lo
+  if (sqlite3BtreeIndexMoveto(c, r, &amp;res) != SQLITE_OK) return -1;
+  ...
+  do {
+    u32 amt; const u8 *rec = idx_fetch(c, &amp;amt); u64 t[1]; const u8 *d[1];
+    if (!rec || rec_decode(rec, amt, 1, t, d) != 1 || !st_isint(t[0])) return -1;
+    i64 pid = st_int(t[0], d[0]);
+    if (pid &gt; hi) break;                                          // past the last post: done
+    total++; if (counts) counts[pid - lo]++;
+  } while ((rc = sqlite3BtreeNext(c, 0)) == SQLITE_OK);
+  return rc == SQLITE_OK || rc == SQLITE_DONE ? total : -1;
+}</code></pre>
+  </div>
+
+  <h3>Then: patching SQLite itself</h3>
+  <p>The team tried changes inside SQLite's own source and kept only the three that won on the real Xeon. Each leaves the file format, the query results and the bytes written to disk identical to stock SQLite. One example: when you look up row 1,209 right after row 1,208, they're almost certainly on the same leaf page, yet stock SQLite climbs back to the root of the tree every time. The <code>btree-sameleaf</code> patch checks the leaf first.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 230" role="img" aria-label="B-tree lookup: stock SQLite descends from the root to the leaf for every lookup; the patch notices the next key is on the leaf the cursor is already on and searches it directly.">
+      <defs><marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fh"/></marker>
+      <marker id="ar5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fa"/></marker></defs>
+      <rect x="400" y="20" width="160" height="34" rx="6" class="box"/><text x="480" y="42" text-anchor="middle" class="small">root page</text>
+      <rect x="160" y="92" width="160" height="34" rx="6" class="box"/><text x="240" y="114" text-anchor="middle" class="small">interior</text>
+      <rect x="640" y="92" width="160" height="34" rx="6" class="box"/><text x="720" y="114" text-anchor="middle" class="small">interior</text>
+      <line x1="440" y1="54" x2="240" y2="92" class="ln"/><line x1="520" y1="54" x2="720" y2="92" class="ln"/>
+      <g class="mono small">
+        <rect x="40" y="166" width="160" height="34" rx="6" class="box"/><text x="120" y="188" text-anchor="middle">rows 1001–1100</text>
+        <rect x="240" y="166" width="190" height="34" rx="6" class="box-a"/><text x="335" y="188" text-anchor="middle">rows 1101–1250</text>
+        <rect x="530" y="166" width="160" height="34" rx="6" class="box"/><text x="610" y="188" text-anchor="middle">rows 1251–1400</text>
+        <rect x="740" y="166" width="160" height="34" rx="6" class="box"/><text x="820" y="188" text-anchor="middle">rows 1401–1520</text>
+      </g>
+      <line x1="200" y1="126" x2="120" y2="166" class="ln"/><line x1="280" y1="126" x2="335" y2="166" class="ln"/>
+      <line x1="690" y1="126" x2="610" y2="166" class="ln"/><line x1="750" y1="126" x2="820" y2="166" class="ln"/>
+      <path d="M408,58 Q 330,70 300,90" class="ln-h" marker-end="url(#ar5)"/>
+      <path d="M300,128 L330,162" class="ln-h" marker-end="url(#ar5)"/>
+      <text x="350" y="80" class="th small">stock: back to the root, every time</text>
+      <path d="M432,183 C 470,150 470,216 434,193" class="ln-a" marker-end="url(#ar5a)"/>
+      <text x="476" y="218" class="ta small">patched: "is 1,209 on this leaf? yes", search here</text>
+    </svg>
+  </div>
+  <figcaption>In SQLite's terms: the cursor is already on a valid leaf whose first and last row ids bracket the key, so the search starts on that page. It made the feed 15% faster on the Xeon (experiment 8).</figcaption>
+</figure>
+<div class="col">
+  <div class="code">
+    <div class="src"><span>explore/sqlite-patches/patches/btree-sameleaf.patch</span><span>the core of a 46-line patch to sqlite3.c</span></div>
+<pre><code class="language-diff">+  /* If the cursor is on a leaf whose rowids span intKey, the row (if any)
++  ** is on this leaf: search it without going back to the root. */
++  if( pCur-&gt;eState==CURSOR_VALID
++   &amp;&amp; pCur-&gt;iPage&gt;0
++   &amp;&amp; pCur-&gt;pPage-&gt;leaf
++   &amp;&amp; pCur-&gt;pPage-&gt;isInit
++   &amp;&amp; pCur-&gt;pPage-&gt;nCell&gt;1
++  ){
+       ...  compare intKey with the first and last cell's rowid  ...
++        goto moveto_table_search_page;
++  }
+   rc = moveToRoot(pCur);</code></pre>
+  </div>
+  <p>The other two: <code>btree-interp</code> searches a page the way you'd look up a word in a dictionary (row 1,209 on a page of rows 1,101–1,250 is probably about 70% of the way in), rather than always halving. <code>pcache1-maxkey</code> removes a needless scan of SQLite's page cache at every commit. Not every idea survived: putting SIMD <em>inside</em> SQLite's page search lost on the Xeon, so it was dropped.</p>
+
+  <h3>Saving writes: one disk write per commit</h3>
+  <p>SQLite in "WAL" mode appends each changed page to a log file. It writes each page as two pieces, a 24-byte header and then the 4 KB page, so a commit that touches 10 pages makes 20 separate write calls. The server slips a thin layer between SQLite and the disk that holds the pieces in memory and sends the whole commit as <strong>one write</strong>. It knows the commit is complete because SQLite marks the last frame's header.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 170" role="img" aria-label="Before: a commit of three pages issues six write calls, header and page alternating. After: the same bytes are buffered and written with one call when the commit frame arrives.">
+      <text x="20" y="28" class="ttl">Stock SQLite</text>
+      <g>
+        <rect x="160" y="12" width="20" height="26" rx="3" class="box-h"/><rect x="186" y="12" width="90" height="26" rx="3" class="box-h"/>
+        <rect x="290" y="12" width="20" height="26" rx="3" class="box-h"/><rect x="316" y="12" width="90" height="26" rx="3" class="box-h"/>
+        <rect x="420" y="12" width="20" height="26" rx="3" class="box-h"/><rect x="446" y="12" width="90" height="26" rx="3" class="box-h"/>
+        <text x="560" y="30" class="th">6 write calls: header, page, header, page…</text>
+      </g>
+      <text x="20" y="96" class="ttl ta">With the shim</text>
+      <rect x="160" y="80" width="376" height="26" rx="3" class="box-a"/>
+      <text x="348" y="98" text-anchor="middle" class="mono small">same bytes, same order, same place</text>
+      <text x="560" y="98" class="ta">1 write call, when the commit frame lands</text>
+      <text x="20" y="150" class="mu small">Durability is unchanged: the commit still isn't reported done (and no reply is sent) until every byte has been handed to the OS.</text>
+    </svg>
+  </div>
+</figure>
+<div class="col">
+  <div class="code">
+    <div class="src"><span>explore/db/engine.c</span><span>the end of the shim's write function</span></div>
+<pre><code class="language-c">  memcpy(c-&gt;buf + c-&gt;n, b, (size_t)n); c-&gt;n += (size_t)n;     // just remember the bytes
+  if (n == 24) {                                                 // a 24-byte frame header:
+    const u8 *h = b;                                             //   non-zero "db size" = commit frame
+    c-&gt;commit_hdr = (h[4] | h[5] | h[6] | h[7]) != 0;
+    return SQLITE_OK;
+  }
+  if (c-&gt;commit_hdr) { c-&gt;commit_hdr = 0; return cw_flush(c); }   // the commit frame is complete
+  return SQLITE_OK;</code></pre>
+  </div>
+
+  <h3>The checkpoint write gate</h3>
+  <p>The log file can't grow forever. Every so often SQLite copies the logged pages back into the main database file, a <strong>checkpoint</strong>, and then waits for the disk to confirm. On the test box that wait takes 130–270 ms, and if it happens in the middle of serving, every request in line waits too. That spike was the single biggest threat to the "99% under 1 second" rule.</p>
+  <p>The fix is a second thread that checkpoints in the background, plus a <strong>gate</strong>. When the log reaches its high mark, the server keeps answering reads but leaves new writes waiting, unread, in the network buffers until the checkpoint catches up (typically about 55 ms). Then they're processed normally.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 220" role="img" aria-label="Timeline: reads are served continuously; when the log reaches its high mark, writes are held for about 55 milliseconds while the background checkpoint drains, then released.">
+      <text x="20" y="26" class="ttl">Timeline around one checkpoint</text>
+      <text x="20" y="66" class="small">reads</text>
+      <rect x="110" y="50" width="830" height="24" rx="4" class="box-a"/><text x="525" y="67" text-anchor="middle" class="small ta">served the whole time</text>
+      <text x="20" y="112" class="small">writes</text>
+      <rect x="110" y="96" width="420" height="24" rx="4" class="box-a"/>
+      <rect x="530" y="96" width="120" height="24" rx="4" class="box-h"/><text x="590" y="113" text-anchor="middle" class="small th">held ~55 ms</text>
+      <rect x="650" y="96" width="290" height="24" rx="4" class="box-a"/>
+      <text x="20" y="158" class="small">checkpoint</text>
+      <rect x="330" y="142" width="320" height="24" rx="4" class="box"/><text x="490" y="159" text-anchor="middle" class="small mu">background thread copies log → database</text>
+      <line x1="530" y1="40" x2="530" y2="180" class="ln dash"/><text x="530" y="200" text-anchor="middle" class="mu small">log hits high mark</text>
+      <line x1="650" y1="40" x2="650" y2="180" class="ln dash"/><text x="650" y="200" text-anchor="middle" class="mu small">caught up: gate opens</text>
+    </svg>
+  </div>
+  <figcaption>On the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17).</figcaption>
+</figure>
+<div class="col">
+  <div class="code">
+    <div class="src"><span>explore/db/engine.c</span><span>asked once per batch: should POSTs wait?</span></div>
+<pre><code class="language-c">int eng_writes_paused(eng *e) {
+  if (!e-&gt;drain) return 0;
+  u32 mx, pend; wal_state(e, &amp;mx, &amp;pend);
+  double held = mono_ms() - e-&gt;drain_t0;
+  if (pend == 0 || held &gt; e-&gt;o.ckpt_drain_ms) {          // caught up, or give up waiting
+    __atomic_store_n(&amp;e-&gt;drain, 0, __ATOMIC_RELEASE);
+    ...
+    return 0;
+  }
+  return 1;                                             // keep holding writes
+}</code></pre>
+  </div>
+  <p>One more batch-level trick is allowed outright by the rules: <strong>group commit</strong>. All of a batch's writes share one transaction and one commit, and every reply in the batch waits for it.</p>
+</div>
+</section>
+
+<!-- ============================================================ STAGE 5 -->
+<section id="reply">
+<div class="col">
+  <div class="stage-tag"><i>5</i>REPLY</div>
+  <h2>The memory wall, and hanging up on purpose</h2>
+  <p>Replies are assembled in a per-batch scratch area and handed to the kernel only after the commit. The interesting decision is a single header: whether the reply says <code>Connection: close</code>.</p>
+  <p>Remember the first chart: CPU isn't the scarce thing. At this scale, <strong>memory</strong> is. Every open connection costs the kernel about <strong>4.3 KB</strong>, measured on the Xeon, and that can't be shrunk without admin rights. The box has about 1,630 MB free. After leaving room for the server itself and its database cache, it runs out somewhere around <strong>340,000 idle connections</strong>. That's well short of the 500,000-user goal, so keeping one connection per user can't get there.</p>
+  <p>The way past the wall comes from reading the organizer's load generator. Simulated users spend most of their time "reading", time spent reconnecting isn't counted as delay, and a user whose connection was closed simply opens a new one next time. So near the memory limit, the server attaches <code>Connection: close</code> to a fraction of replies. Idle users then share fewer open connections, and the server can carry more users than it has sockets.</p>
+</div>
+<div class="col">
+  <div class="demo" id="mem-demo">
+    <h4>Play with it: users vs. the memory wall</h4>
+    <p class="hint">A rough model: 4.3 KB of kernel memory per open connection, against the ~1,430 MB left of the box's 1,630 MB once about 200 MB is set aside for the server and its database cache. With shedding, the small Xeon test settled at 2.75 users per open connection. That test used 5,000 users, so treat the shedding line as an illustration.</p>
+    <label for="users">Simulated users: <b id="users-val" class="readout">500,000</b></label>
+    <input type="range" id="users" min="50000" max="800000" step="10000" value="500000">
+    <div class="readout" style="margin-top:12px">Everyone keeps a connection open</div>
+    <div class="meter" aria-hidden="true"><i id="m-keep"></i><span class="wall" style="left:100%"></span></div>
+    <div class="row readout"><span id="t-keep"></span><span id="p-keep"></span></div>
+    <div class="readout" style="margin-top:12px">With "Connection: close" shedding</div>
+    <div class="meter" aria-hidden="true"><i id="m-shed"></i></div>
+    <div class="row readout"><span id="t-shed"></span><span id="p-shed"></span></div>
+  </div>
+</div>
+<div class="col">
+  <p>Hanging up isn't free. Each reconnect costs the server about 8–9 µs of extra CPU on the Xeon (experiment 18), but there's CPU to spare at the wall. Shedding only kicks in near the memory-derived cap, it never interrupts a request in progress, and it applies to everyone alike. In the Xeon test it caused <strong>zero errors in 129,730 requests</strong> (experiment 6). The decision itself is a coin flip weighted by how close to the wall the server is:</p>
+  <div class="code">
+    <div class="src"><span>explore/io/loop.c</span><span>close_frac rises as free memory falls</span></div>
+<pre><code class="language-c">int loop_close_hint(loop_t *L, loop_conn id)
+{
+    (void)id;                                   // never aimed at a particular client
+    float f = L-&gt;st.close_frac;
+    if (f &lt;= 0) return 0;                       // plenty of memory: keep everyone
+    L-&gt;rng ^= L-&gt;rng &lt;&lt; 13; L-&gt;rng ^= L-&gt;rng &gt;&gt; 17; L-&gt;rng ^= L-&gt;rng &lt;&lt; 5;   // xorshift
+    if ((float)(L-&gt;rng &gt;&gt; 8) &lt; f * 16777216.0f) { L-&gt;st.hint_closes++; return 1; }
+    return 0;
+}</code></pre>
+  </div>
+  <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
+</div>
+</section>
+
+<!-- ============================================================ BROKER -->
+<section id="broker">
+<div class="col">
+  <div class="stage-tag"><i>★</i>BEHIND THE SCENES</div>
+  <h2>A queue for the one machine whose opinion counts</h2>
+  <p>All of this was written on an Apple laptop, a different kind of chip entirely. It can't run AVX-512 at all, and it turned out to be misleading in both directions: SQLite paths ran 2.7–4× slower on the Xeon, and the laptop's fast disk hid the checkpoint stall completely. So the rule became: <strong>only the Xeon decides</strong>.</p>
+  <p>The team rented two machines matching the contest box (same Xeon Platinum 8260, same 1 core and 2 GB, same Linux kernel). About fifteen AI coding sessions were working on different parts in parallel, but none of them logs in to the boxes. Instead, one session acts as a <strong>broker</strong>:</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+    <svg viewBox="0 0 960 250" role="img" aria-label="Broker flow: exploration sessions submit a payload with a run script, sources and a reason. The broker orders the queue by expected effect on users held, runs each on one of two Xeon boxes for at most 180 seconds on a fresh database copy, and returns a results zip.">
+      <defs><marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fm"/></marker>
+      <marker id="ar6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fa"/></marker></defs>
+      <text x="20" y="26" class="ttl">~15 parallel sessions</text>
+      <g class="small">
+        <rect x="20" y="40" width="150" height="30" rx="6" class="box"/><text x="95" y="60" text-anchor="middle">parser</text>
+        <rect x="20" y="76" width="150" height="30" rx="6" class="box"/><text x="95" y="96" text-anchor="middle">JWT</text>
+        <rect x="20" y="112" width="150" height="30" rx="6" class="box"/><text x="95" y="132" text-anchor="middle">database engine</text>
+        <rect x="20" y="148" width="150" height="30" rx="6" class="box"/><text x="95" y="168" text-anchor="middle">event loop</text>
+        <rect x="20" y="184" width="150" height="30" rx="6" class="box"/><text x="95" y="204" text-anchor="middle">integration …</text>
+      </g>
+      <path d="M174,127 L244,127" class="ln" marker-end="url(#ar6)"/>
+      <text x="209" y="118" text-anchor="middle" class="mu small">payload</text>
+      <rect x="248" y="72" width="190" height="110" rx="10" class="box"/>
+      <text x="343" y="96" text-anchor="middle" class="small mono">run.sh + sources</text>
+      <text x="343" y="118" text-anchor="middle" class="small mono">manifest.json</text>
+      <text x="343" y="140" text-anchor="middle" class="small th">"reasoning" required:</text>
+      <text x="343" y="158" text-anchor="middle" class="small mu">what it measures, why</text>
+      <path d="M438,127 L498,127" class="ln" marker-end="url(#ar6)"/>
+      <rect x="502" y="72" width="170" height="110" rx="10" class="box-a"/>
+      <text x="587" y="104" text-anchor="middle" class="ttl">broker</text>
+      <text x="587" y="126" text-anchor="middle" class="small">orders the queue by</text>
+      <text x="587" y="144" text-anchor="middle" class="small">expected effect on</text>
+      <text x="587" y="162" text-anchor="middle" class="small">users held</text>
+      <path d="M672,110 L742,82" class="ln-a" marker-end="url(#ar6a)"/>
+      <path d="M672,144 L742,172" class="ln-a" marker-end="url(#ar6a)"/>
+      <rect x="746" y="54" width="194" height="52" rx="8" class="box"/><text x="843" y="76" text-anchor="middle" class="small">Xeon box 1</text><text x="843" y="94" text-anchor="middle" class="small mu mono">180 s, fresh DB</text>
+      <rect x="746" y="146" width="194" height="52" rx="8" class="box"/><text x="843" y="168" text-anchor="middle" class="small">Xeon box 2</text><text x="843" y="186" text-anchor="middle" class="small mu mono">180 s, fresh DB</text>
+      <path d="M843,198 L843,232 L95,232 L95,218" class="ln dash" marker-end="url(#ar6)"/>
+      <text x="470" y="226" text-anchor="middle" class="mu small">result.zip with outputs, box snapshots before and after, CPU and memory counters</text>
+    </svg>
+  </div>
+  <figcaption>Each experiment runs as an unprivileged user under the same limits the organizer uses, with a hard 3-minute budget that includes compiling. No kernel tuning is allowed, so the box stays like the scored one. 37 experiments had run by the time this page was written.</figcaption>
+</figure>
+<div class="col">
+  <div class="code">
+    <div class="src"><span>a payload's manifest.json</span><span>shape from synteq-experiments/README.md</span></div>
+<pre><code class="language-json">{"requester_session_id": "local_…",
+ "title": "checkpoint thread + write gate, round 2",
+ "reasoning": "measures batch p99 with the gate vs inline checkpoints; decides the checkpoint design, which sets the tail latency that fails runs",
+ "timeout_s": 180, "needs_root": false}</code></pre>
+  </div>
+  <p>The broker also ran known entries, a C++ server and the previous contest leader (written in Rust), on the same boxes as rulers. That's how the team knows how its numbers relate to the organizer's machine. Under the same load, this server used <strong>32.2 µs</strong> of CPU per request against the leader's <strong>37.6 µs</strong>.</p>
+</div>
+</section>
+
+<!-- ============================================================ RESULTS -->
+<section id="results">
+<div class="col">
+  <p class="eyebrow">So, does it work?</p>
+  <h2>What's measured, and what isn't yet</h2>
+  <p>Every number on this page is labelled with where it was measured. Here are the headline ones. "Xeon" means the rented contest-class boxes, with the load generated on the same box, so the latencies aren't the organizer's.</p>
+</div>
+<div class="col tbl">
+  <table>
+    <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
+    <tbody>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36, via the contest's own test script</span></td></tr>
+      <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
+      <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
+      <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">2.31 ms</td><td>Xeon<span class="hw">experiment 17 (inline: ~99 ms)</span></td></tr>
+      <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
+      <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass; at 300k the test rig itself runs out of ports</span></td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="col">
+  <div class="plain"><b>Not yet known</b>The actual score. That needs the organizer's full search (two-minute probes, then a five-minute hold) on a rig that can drive 500,000 users, and no such run has finished. Until then, the claims stop at the table above.</div>
+</div>
+</section>
+
+<section id="glossary">
+<div class="col">
+  <p class="eyebrow">Pocket glossary</p>
+  <dl class="gloss">
+    <dt>µs / ns</dt><dd>Microsecond (a millionth of a second) / nanosecond (a billionth).</dd>
+    <dt>p95, p99</dt><dd>The response time that 95% (or 99%) of requests beat. The contest cares about the slow tail, not the average.</dd>
+    <dt>kernel</dt><dd>The core of the operating system. It owns the network card, the disk and memory, and programs must ask it for everything.</dd>
+    <dt>system call</dt><dd>One request from a program to the kernel. Relatively expensive.</dd>
+    <dt>io_uring</dt><dd>A Linux interface where program and kernel exchange work through shared queues instead of one call per operation.</dd>
+    <dt>SIMD</dt><dd>CPU instructions that apply one operation to many values at once (AVX2: 32 bytes, AVX-512: 64 bytes).</dd>
+    <dt>JWT, HMAC</dt><dd>A signed login token, and the keyed hash used to check its signature.</dd>
+    <dt>B-tree</dt><dd>The sorted tree of pages SQLite stores tables and indexes in.</dd>
+    <dt>WAL, checkpoint</dt><dd>SQLite's append-only change log, and the step that copies it back into the main file.</dd>
+  </dl>
+</div>
+</section>
+
+<footer class="col">
+  Built from the cursed-http repository: <code>explore/</code> holds each component's write-up (RESULTS.md) and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked. Numbers are as of 24 October 2026.
+</footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
+<script>
+(function () {
+  if (window.Prism) { try { Prism.highlightAll(); } catch (e) {} }
+
+  // SIMD demo: first 64 bytes, mark '\n', print the 64-bit mask (bit i = byte i), as fp_lf64_simd computes it.
+  var ta = document.getElementById('req-in'), grid = document.getElementById('bytes'), out = document.getElementById('mask-out');
+  function show(b) {
+    if (b === 10) return '\\n'; if (b === 13) return '\\r'; if (b === 32) return '␣';
+    if (b < 32 || b > 126) return '·'; return String.fromCharCode(b);
+  }
+  function simd() {
+    var s = ta.value.replace(/\r?\n/g, '\n'), bytes = [];
+    for (var i = 0; i < s.length && bytes.length < 64; i++) {
+      var c = s.charCodeAt(i); bytes.push(c > 255 ? 63 : c);
+    }
+    var n = bytes.length, hi = 0, lo = 0, hits = [];
+    var html = '';
+    for (var k = 0; k < 64; k++) {
+      var b = k < n ? bytes[k] : 0, hit = k < n && b === 10;
+      if (hit) { hits.push(k); if (k < 32) lo = (lo | (1 << k)) >>> 0; else hi = (hi | (1 << (k - 32))) >>> 0; }
+      html += '<div class="' + (hit ? 'hit' : (k >= n ? 'pad' : '')) + '" title="byte ' + k + '">' + (k < n ? show(b) : '') + '</div>';
+    }
+    grid.innerHTML = html;
+    var hex = ('00000000' + hi.toString(16)).slice(-8) + ('00000000' + lo.toString(16)).slice(-8);
+    out.innerHTML = 'mask = <b>0x' + hex + '</b><br>line-breaks at byte ' + (hits.length ? hits.join(', ') : 'none in the first 64') +
+      ' · next line starts after byte <b>' + (hits.length ? hits[0] : '—') + '</b> (one "count trailing zeros" instruction)';
+  }
+  ta.addEventListener('input', simd); simd();
+
+  // Memory model: 4.3 KB/connection, ~1,430 MB usable for connections, 2.75 users per connection when shedding (exp6).
+  var KB = 4.3, AVAIL = 1430, SHARE = 2.75;   // 1,630 MB free minus ~200 MB for the server itself (a model)
+  var r = document.getElementById('users');
+  function fmt(x) { return Math.round(x).toLocaleString('en-US'); }
+  function bar(id, mb) {
+    var el = document.getElementById(id), pct = Math.min(100, mb / AVAIL * 100);
+    el.style.width = pct + '%'; el.className = mb > AVAIL ? 'over' : '';
+  }
+  function pill(id, mb) {
+    document.getElementById(id).innerHTML = mb > AVAIL ? '<span class="pill bad">out of memory</span>' : '<span class="pill ok">fits</span>';
+  }
+  function mem() {
+    var u = +r.value, keep = u * KB / 1024, shed = (u / SHARE) * KB / 1024;
+    document.getElementById('users-val').textContent = fmt(u);
+    bar('m-keep', keep); bar('m-shed', shed);
+    document.getElementById('t-keep').innerHTML = fmt(u) + ' connections · <b>' + fmt(keep) + ' MB</b> of ' + fmt(AVAIL) + ' MB';
+    document.getElementById('t-shed').innerHTML = '≈' + fmt(u / SHARE) + ' connections · <b>' + fmt(shed) + ' MB</b>';
+    pill('p-keep', keep); pill('p-shed', shed);
+  }
+  r.addEventListener('input', mem); mem();
+})();
+</script>
+
+</body>
+</html>
