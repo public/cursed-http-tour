@@ -898,14 +898,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <dl>
         <dt>Server</dt><dd>On the PR's build, free memory sat at 425–432 MB, just above the 400 MB line where shedding begins, so nothing was shed. All 425,000 connections stayed open and CPU climbed to about 78%.</dd>
         <dt>Kernel and memory</dt><dd>Kernel memory for the connections reached about 1.58 GB. Then a late surge of data waiting in socket queues (up to 229 MB) took the container past its 2 GB limit, faster than the one-second average could react, and it was killed. An earlier test build failed the same way, after its shedding had switched on at 91% CPU.</dd>
-        <dt>Users see</dt><dd>p99 4.6 s and 15% of requests failed: a fail. The previous leader was also killed for running out of memory at 425,000. On the real Xeon, the kernel caps queued socket data at about 175 MB, so this exact surge plays out differently there, which is still to be tested.</dd>
+        <dt>Users see</dt><dd>p99 4.6 s and 15% of requests failed: a fail. The previous leader was also killed for running out of memory at 425,000. The real Xeon's kernel limits socket memory to about 175 MB, so the team re-ran 425,000 with exactly those limits. It was still killed: socket memory went from nothing to 384 MB in three seconds, and 54% of requests failed. The cap doesn't prevent it, so a socket-memory term for the shedding rule is being tested.</dd>
       </dl>
     </li>
     <li>
       <h4><span>ON THE REAL XEON</span>A different wall comes first</h4>
       <dl>
         <dt>Server</dt><dd>The contest machine has the same 2 GB but a different kernel, and there each open connection costs about 4.3 KB of kernel memory (experiment 19). That puts the wall at roughly 340,000 open connections, so free memory runs low sooner and shedding will start at a lower crowd size than on the laptop.</dd>
-        <dt>Kernel and memory</dt><dd>On that kernel, the memory the network can use for queued data is capped at about 175 MB, which limits how far queued requests can pile up. Each reconnect costs CPU (about 8–9 µs on the Xeon, experiment 18).</dd>
+        <dt>Kernel and memory</dt><dd>That kernel limits socket memory to about 175 MB, but the arena re-run with the same limits shows the cap alone doesn't stop a queue surge from running the box out of memory. Each reconnect costs CPU (about 8–9 µs on the Xeon, experiment 18).</dd>
         <dt>Users see</dt><dd>Not measured at full scale: the 1-CPU test boxes can't generate that much load against themselves. The laptop's 400,000 is not guaranteed there.</dd>
       </dl>
     </li>
