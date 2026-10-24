@@ -319,7 +319,7 @@ html { scroll-behavior: smooth; }
     else r-&gt;singles++;
 }</code></pre>
   </div>
-  <p>Receiving is tuned for memory, not just speed. Most connections sit idle most of the time, so each idle one holds only a cheap standing "tell me when data arrives" ticket (a multishot <em>poll</em>). It doesn't hold a parked receive, which on this kernel costs about 190 extra bytes per connection; on newer kernels it's 608. When data shows up, a single receive pulls it into a shared pool of buffers. The server also keeps 256 accepts in flight, because on this kernel version the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
+  <p>Receiving uses the same idea. Each connection keeps one standing ("multishot") receive armed, so the kernel drops every new request into a shared pool of buffers without being asked again. The team also built a leaner mode for memory: idle connections hold only a cheap "tell me when data arrives" ticket (a multishot <em>poll</em>), which saves about 190 bytes per connection on this kernel and 608 on newer ones. It's switched off for now. In the local arena it ran out of memory at 400,000 users when a huge crowd of connections closed at the same moment, and the fix is in progress. The server also keeps 256 accepts in flight, because on this kernel version the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
 </div>
 </section>
 
@@ -600,7 +600,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <line x1="650" y1="40" x2="650" y2="180" class="ln dash"/><text x="650" y="200" text-anchor="middle" class="mu small">caught up: gate opens</text>
     </svg>
   </div>
-  <figcaption>On the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17). The shipped version keeps the slowest 1% at 2.7 ms with the CPU 55% busy and 10.2 ms at 90% busy (experiment 35).</figcaption>
+  <figcaption>On the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17). With the shipped settings the slowest 1% stays at 3.8 ms with the CPU 56% busy and 15.8 ms at 92% busy (experiments 39 and 40).</figcaption>
 </figure>
 <div class="col">
   <div class="code">
@@ -617,7 +617,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   return 1;                                             // keep holding writes
 }</code></pre>
   </div>
-  <p>The checkpoint also had a memory cost. The kernel kept the whole log file cached in memory (up to ~256 MB), and that's memory the connections need. The final version checkpoints in smaller passes and tells the kernel to forget each log page once it has been copied back (<code>posix_fadvise</code>). That cut the log's cached memory to <strong>under 20 MB</strong> on the Xeon (experiment 35).</p>
+  <p>The checkpoint also had a memory cost. The kernel kept the whole log file cached in memory (up to ~256 MB), and that's memory the connections need. The final version checkpoints in smaller passes and tells the kernel to forget each log page once it has been copied back (<code>posix_fadvise</code>). That cut the log's cached memory to <strong>15–18 MB</strong> on the Xeon (experiments 39 and 40). Testing also caught a real bug along the way: under write-heavy load the gate never closed, so the log just kept growing. It's fixed.</p>
   <p>One more batch-level trick is allowed outright by the rules: <strong>group commit</strong>. All of a batch's writes share one transaction and one commit, and every reply in the batch waits for it.</p>
 </div>
 </section>
@@ -659,7 +659,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
     return 0;
 }</code></pre>
   </div>
-  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users, where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
+  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users, where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, with the lean receive mode switched on. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -736,6 +736,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td><code>DB_VFS</code></td><td>one-write-per-commit file layer</td><td>SQLite's own</td></tr>
       <tr><td><code>DB_CKPT</code></td><td>background checkpoint thread + write gate</td><td>SQLite's autocheckpoint</td></tr>
       <tr><td><code>DB_WAL_DROP</code></td><td>forget copied log pages</td><td>keep them cached</td></tr>
+      <tr><td><code>SQLITE_LINK</code></td><td>our engine compiled into SQLite itself</td><td>SQLite as a separate library, public API only</td></tr>
       <tr><td><code>JWT</code></td><td>8-lane multi-buffer HMAC</td><td>one token at a time</td></tr>
       <tr><td><code>PARSER_FAST</code> / <code>PARSER_SLOW</code></td><td>lane-parallel + our SIMD fallback</td><td>picohttpparser only</td></tr>
     </tbody>
@@ -743,6 +744,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </div>
 <div class="col">
   <p>The fallback parser is swappable too: our SIMD one, picohttpparser, Node's llhttp, uWebSockets (C++), hparse (Zig) or httparse (Rust). All 24 combinations of fast and fallback parser pass the 42 checks. With every SQLite knob combined, 52 database configurations pass with the database's integrity check clean (Linux, in Docker). The server prints the mode it was built with when it starts.</p>
+  <p>The boring build doesn't just promise to stay on SQLite's public API; it's checked. The build lists every SQLite function the program references and fails if any of them isn't in SQLite's public header. The public-API engine and the cursed one gave byte-identical responses to 3,408 test requests.</p>
 </div>
 </section>
 
@@ -760,17 +762,18 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36, via the contest's own test script</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
-      <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">2.7 ms</td><td>Xeon<span class="hw">experiment 35, 55% busy (10.2 ms at 90%; inline: ~99 ms)</span></td></tr>
-      <tr><td>Cached log (WAL) memory</td><td class="num">≤ 20 MB</td><td>Xeon<span class="hw">experiment 35 (was ~256 MB)</span></td></tr>
+      <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">3.8 ms</td><td>Xeon<span class="hw">experiment 39, 56% busy (15.8 ms at 92%, exp. 40; inline: ~99 ms)</span></td></tr>
+      <tr><td>Cached log (WAL) memory</td><td class="num">15–18 MB</td><td>Xeon<span class="hw">experiments 39–40 (was ~256 MB)</span></td></tr>
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
-      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass</span></td></tr>
-      <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass; at 300k the test rig itself runs out of ports</span></td></tr>
+      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass, lean receive mode on</span></td></tr>
+      <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass</span></td></tr>
+      <tr><td>Local 2-minute probe at 400k</td><td class="num">passed, then OOM</td><td>Laptop, Docker<span class="hw">p99 297 ms with the lean receive mode, then out of memory when every connection closed at the end; the leader also ran out of memory there and failed on latency</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <div class="plain"><b>Not yet known</b>The actual score. That needs the organizer's full search (two-minute probes, then a five-minute hold) on a rig that can drive 500,000 users, and no such run has finished. Until then, the claims stop at the table above.</div>
+  <div class="plain"><b>Not yet known</b>The actual score. That needs the organizer's full search (two-minute probes, then a five-minute hold) on a rig that can drive 500,000 users, and no such run has finished. Also open: the memory spike when a huge crowd of connections closes at once, found at 400,000 users in the arena. Until both are settled, the claims stop at the table above.</div>
 </div>
 </section>
 
