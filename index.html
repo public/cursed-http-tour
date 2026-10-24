@@ -659,7 +659,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
     return 0;
 }</code></pre>
   </div>
-  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
+  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users, where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -764,6 +764,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Cached log (WAL) memory</td><td class="num">≤ 20 MB</td><td>Xeon<span class="hw">experiment 35 (was ~256 MB)</span></td></tr>
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
+      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass</span></td></tr>
       <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass; at 300k the test rig itself runs out of ports</span></td></tr>
     </tbody>
   </table>
