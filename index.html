@@ -671,7 +671,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </div>
 </div>
 <div class="col">
-  <p>Hanging up isn't free. Each reconnect costs the server about 8–9 µs of extra CPU on the Xeon (experiment 18), so shedding only pays if CPU is left over when memory runs out. At the contest's load CPU is the scarcer of the two, so the shipped setting sheds as late as it safely can: it starts only when open connections fill 95% of the memory-derived cap, and stops again below 88%. In the arena at 350,000 users that meant no shedding at all and a p99 of 4.3 ms. The earlier setting (start at 85%, stop at 75%) shed with about 4,700 reconnects a second and a p99 of 39 ms (laptop Docker, 1-minute holds). Shedding only kicks in near the memory-derived cap, it never interrupts a request in progress, and it applies to everyone alike. In the Xeon test it caused <strong>zero errors in 129,730 requests</strong> (experiment 6). The decision itself is a coin flip weighted by how close to the wall the server is:</p>
+  <p>Hanging up isn't free. Each reconnect costs the server about 8–9 µs of extra CPU on the Xeon (experiment 18), and at the contest's load CPU is the scarcer resource, so the shipped rule only sheds when memory is genuinely running out. It watches available memory, averaged over about a second. Above 400 MB free, nothing is shed. Below that, a growing share of replies say <code>Connection: close</code>, up to half of them at 200 MB. It never looks at how many connections are open. The earlier rule did: it shed once open connections reached 95% of a memory-derived cap, and in the arena that meant hanging up on people while memory was still plentiful. On the same test build at 375,000 and 400,000 users, the connection-count rule failed both runs and the memory rule passed both, without shedding at all (laptop Docker, 1-minute holds). Shedding never interrupts a request in progress, and it applies to everyone alike. In an older Xeon test of the idea it caused zero errors in 129,730 requests (experiment 6). The decision itself is a coin flip weighted by how short of memory the server is:</p>
   <div class="code">
     <div class="src"><span>explore/io/loop.c</span><span>close_frac rises as free memory falls</span></div>
 <pre><code class="language-c">int loop_close_hint(loop_t *L, loop_conn id)
@@ -686,7 +686,6 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </div>
   <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users (under a lighter load than the contest uses), where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, measured with the lean receive mode that's now an opt-in. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>One more emergency valve exists but is switched off: <em>deadline shedding</em>. When on, any request that has waited too long in the kernel's queue gets an instant "overloaded" reply instead of a slow one, turning would-be tail latency into a few fast errors inside the contest's 1% error allowance. It looks only at how long the request waited, never at who sent it or what it asks for. In the arena at 350,000 users it turned 35% of requests into errors and still failed on latency, so it stays off.</p>
-  <p>A smarter "headroom" controller, which steers shedding by how much memory is actually left, was tried too. It failed a check on the Xeon (it oscillated, and it paused accepting new connections when it shouldn't have), so it stays out of the submission while it's tuned.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -753,7 +752,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <p class="eyebrow">Every trick has an off switch</p>
   <h2>How cursed would you like it?</h2>
   <p>Each unusual thing the server does can be switched off when it's built, one knob at a time, or all at once with <code>CURSED=boring</code>. The boring build is by-the-book: stock SQLite, ordinary SQL queries, SQLite's own file layer and checkpoints, plain one-at-a-time login checks, and the standard picohttpparser for every request. Both builds pass the contest's 42 checks, so you can measure exactly what each trick buys. A middle setting, <code>CURSED=lawful</code>, uses completely stock SQLite through its public API but keeps every trick outside the database.</p>
-  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the three final builds used this much CPU per request: <strong>max 34 µs, lawful 43 µs, boring 47 µs</strong> (experiments 65–67, without profile-guided optimisation). All three pass the contest's 42 checks on the Xeon. So the curses, taken together, save roughly a quarter of the CPU per request, and the SQLite curses account for most of that. Most of the gap is the feed: 8.2 µs through SQLite's cursors against 23.2 µs through the spec's SQL (Xeon, experiment 15).</p>
+  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the builds used this much CPU per request: <strong>max 33 µs</strong> at the PR's current commit (experiment 80), and <strong>lawful 43 µs, boring 47 µs</strong> at the previous commit (experiments 66–67; the latest change is all in the event loop). All three pass the contest's 42 checks on the Xeon. So the curses, taken together, save about 30% of the CPU per request, and the SQLite curses account for most of that. Most of the gap is the feed: 8.2 µs through SQLite's cursors against 23.2 µs through the spec's SQL (Xeon, experiment 15).</p>
 </div>
 <div class="col tbl">
   <table>
@@ -787,8 +786,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite, final build</td><td class="num">42 / 42</td><td>Xeon<span class="hw">all three modes (max, lawful, boring) via the contest's own test script on the PR's exact folder (commit 24efb68), experiments 65–67</span></td></tr>
-      <tr><td>CPU per request by build mode</td><td class="num">34 / 43 / 47 µs</td><td>Xeon<span class="hw">max / lawful / boring, final build, experiments 65–67; 10,000 users at contest load (no gzip), loopback, PGO off</span></td></tr>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">max at the PR's commit 6ffe93d (experiment 80); lawful and boring at the previous commit (experiments 66–67)</span></td></tr>
+      <tr><td>CPU per request by build mode</td><td class="num">33 / 43 / 47 µs</td><td>Xeon<span class="hw">max at the PR's commit (experiment 80); lawful / boring at the previous commit (66–67); 10,000 users at contest load (no gzip), loopback, PGO off</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Commits lost in the engine's crash test of the write path</td><td class="num">0 of 60</td><td>Linux, Docker<span class="hw">engine crash test (test_crash), not a load test; before the fix that SQLite's own tests prompted: 39 of 40 lost</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
@@ -797,16 +796,16 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
-      <tr><td>Our highest local pass, contest load</td><td class="num">350,000 users</td><td>Laptop, Docker<span class="hw">the PR's commit, 1-minute holds: 2 of 2 runs pass (p99 45–52 ms, 0 errors, ~1.4 GB peak); 375,000 passed 1 of 2; not an organizer score</span></td></tr>
-      <tr><td>Previous leader (Rust #82), same rig</td><td class="num">350,000 users</td><td>Laptop, Docker<span class="hw">passes 300,000 in 4 of 4 runs (p99 24–509 ms), and 325,000 and 350,000 in quiet re-runs (1 of 1 each, p99 316 ms)</span></td></tr>
+      <tr><td>Our highest local pass, contest load</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">the PR's commit, 1-minute hold: p95 / p99 3.4 / 97 ms, 0 errors, 1,591 MB peak, 12.7 µs per request; 350,000 also passes (p99 116 ms); not an organizer score</span></td></tr>
+      <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; passes every step from 300,000 (4 of 4) to 400,000; killed for running out of memory at 425,000</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. Our highest pass is <strong>350,000 users</strong>: both runs of the PR's build passed there, with the slowest 1% of requests at 45–52 ms and no errors. The previous leader also passes 350,000 in a quiet re-run, with its slowest 1% at 316 ms; an earlier failure there had run while other containers were loading the rig. At 375,000 ours passed one run of two, and 400,000 failed, so 350,000 stays the headline. That's local arm64 with 1-minute holds, not an organizer score.</p>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>both servers hold 400,000 users</strong>. Ours does it with the slowest 1% of requests at 97 ms, about a seventh of the previous leader's 679 ms, with about 160 MB less memory and about 25% less CPU per request (12.7 against 17.0 µs). The leader is killed for running out of memory at 425,000; ours hasn't been run at 425,000 on the PR's commit. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
   <p>For what happens inside the server at each load level, see <a href="#breaking">how it breaks, step by step</a>.</p>
-  <div class="plain"><b>Not yet known</b>The actual score. The final build is frozen and passes the contest's checks on the Xeon in all three modes. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
+  <div class="plain"><b>Not yet known</b>The actual score. The load shedding is still being fine-tuned. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
 </div>
 </section>
 
@@ -815,11 +814,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Turning up the crowd</p>
   <h2>How it breaks, step by step</h2>
-  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build just before the freeze; from 325,000 they come from the frozen configuration.</p>
+  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze; 350,000 and 400,000 are the PR's commit; 375,000 and 425,000 come from a test build with the same shedding rule.</p>
 </div>
 <figure class="wide">
   <div class="fig">
-<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale: about 4 to 7 ms from 200,000 to 350,000 users, 451 ms at 375,000, 7 seconds at 400,000, above the 1-second limit. The old shedding band gave 39 ms at 350,000.">
+<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With headroom shedding p99 stays between about 4 ms and 440 ms from 200,000 to 400,000 users, all passes, and reaches 3.6 seconds at 425,000. The older band rule failed at 375,000 and 400,000 with 2.1 and 7.2 seconds.">
 <line x1="90" y1="300.0" x2="920" y2="300.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="80" y="304.0" text-anchor="end" class="mu small">1 ms</text>
 <line x1="90" y1="235.0" x2="920" y2="235.0" class="ln" style="stroke-opacity:0.35"/>
@@ -830,46 +829,51 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="80" y="109.0" text-anchor="end" class="mu small">1 s</text>
 <line x1="90" y1="40.0" x2="920" y2="40.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="80" y="44.0" text-anchor="end" class="mu small">10 s</text>
-<text x="920" y="99.0" text-anchor="end" class="th small">contest limit: p99 under 1 s</text>
+<text x="98" y="99.0" class="th small">contest limit: p99 under 1 s</text>
 <line x1="90.0" y1="300" x2="90.0" y2="306" class="ln"/>
 <text x="90.0" y="322" text-anchor="middle" class="mu small">200k</text>
-<line x1="193.8" y1="300" x2="193.8" y2="306" class="ln"/>
-<line x1="297.5" y1="300" x2="297.5" y2="306" class="ln"/>
-<text x="297.5" y="322" text-anchor="middle" class="mu small">250k</text>
-<line x1="401.2" y1="300" x2="401.2" y2="306" class="ln"/>
-<line x1="505.0" y1="300" x2="505.0" y2="306" class="ln"/>
-<text x="505.0" y="322" text-anchor="middle" class="mu small">300k</text>
-<line x1="608.8" y1="300" x2="608.8" y2="306" class="ln"/>
-<text x="608.8" y="322" text-anchor="middle" class="mu small">325k</text>
-<line x1="712.5" y1="300" x2="712.5" y2="306" class="ln"/>
-<text x="712.5" y="322" text-anchor="middle" class="mu small">350k</text>
-<line x1="816.2" y1="300" x2="816.2" y2="306" class="ln"/>
-<text x="816.2" y="322" text-anchor="middle" class="mu small">375k</text>
+<line x1="182.2" y1="300" x2="182.2" y2="306" class="ln"/>
+<text x="182.2" y="322" text-anchor="middle" class="mu small">225k</text>
+<line x1="274.4" y1="300" x2="274.4" y2="306" class="ln"/>
+<text x="274.4" y="322" text-anchor="middle" class="mu small">250k</text>
+<line x1="366.7" y1="300" x2="366.7" y2="306" class="ln"/>
+<text x="366.7" y="322" text-anchor="middle" class="mu small">275k</text>
+<line x1="458.9" y1="300" x2="458.9" y2="306" class="ln"/>
+<text x="458.9" y="322" text-anchor="middle" class="mu small">300k</text>
+<line x1="551.1" y1="300" x2="551.1" y2="306" class="ln"/>
+<text x="551.1" y="322" text-anchor="middle" class="mu small">325k</text>
+<line x1="643.3" y1="300" x2="643.3" y2="306" class="ln"/>
+<text x="643.3" y="322" text-anchor="middle" class="mu small">350k</text>
+<line x1="735.6" y1="300" x2="735.6" y2="306" class="ln"/>
+<text x="735.6" y="322" text-anchor="middle" class="mu small">375k</text>
+<line x1="827.8" y1="300" x2="827.8" y2="306" class="ln"/>
+<text x="827.8" y="322" text-anchor="middle" class="mu small">400k</text>
 <line x1="920.0" y1="300" x2="920.0" y2="306" class="ln"/>
-<text x="920.0" y="322" text-anchor="middle" class="mu small">400k</text>
+<text x="920.0" y="322" text-anchor="middle" class="mu small">425k</text>
 <text x="505" y="344" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds)</text>
-<path d="M90.0,258.2 L297.5,245.1 L505.0,249.0 L608.8,259.5 L712.5,258.8 L816.2,127.5 L920.0,49.9" class="ln-a"/>
+<path d="M90.0,258.2 L274.4,245.1 L458.9,249.0 L643.3,165.9 L735.6,128.3 L827.8,171.0 L920.0,68.8" class="ln-a"/>
 <circle cx="90.0" cy="258.2" r="5" class="fa"/>
-<text x="100.0" y="246.2" text-anchor="start" class="small ta">4.4 ms</text>
-<circle cx="297.5" cy="245.1" r="5" class="fa"/>
-<text x="297.5" y="233.1" text-anchor="middle" class="small ta">7.0 ms</text>
-<circle cx="505.0" cy="249.0" r="5" class="fa"/>
-<text x="505.0" y="237.0" text-anchor="middle" class="small ta">6.1 ms</text>
-<circle cx="608.8" cy="259.5" r="5" class="fa"/>
-<text x="608.8" y="247.5" text-anchor="middle" class="small ta">4.2 ms</text>
-<circle cx="712.5" cy="258.8" r="5" class="fa"/>
-<text x="712.5" y="246.8" text-anchor="middle" class="small ta">4.3 ms</text>
-<circle cx="816.2" cy="127.5" r="5" class="fa"/>
-<text x="816.2" y="115.5" text-anchor="middle" class="small ta">451 ms</text>
-<text x="816.2" y="147.5" text-anchor="middle" class="mu small">≈358k open, shedding</text>
-<circle cx="920.0" cy="49.9" r="5" class="fh"/>
-<text x="910.0" y="37.9" text-anchor="end" class="small th">7.0 s</text>
-<text x="910.0" y="69.9" text-anchor="end" class="mu small">≈361k open, CPU 95%</text>
-<circle cx="712.5" cy="196.9" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
-<text x="722.5" y="200.9" class="small th">39 ms with the old 85%/75% band</text>
+<text x="100.0" y="248.2" class="small ta">4.4 ms</text>
+<circle cx="274.4" cy="245.1" r="5" class="fa"/>
+<text x="274.4" y="233.1" text-anchor="middle" class="small ta">7.0 ms</text>
+<circle cx="458.9" cy="249.0" r="5" class="fa"/>
+<text x="458.9" y="237.0" text-anchor="middle" class="small ta">6.1 ms</text>
+<circle cx="643.3" cy="165.9" r="5" class="fa"/>
+<text x="643.3" y="153.9" text-anchor="middle" class="small ta">116 ms</text>
+<circle cx="735.6" cy="128.3" r="5" class="fa"/>
+<text x="735.6" y="150.3" text-anchor="middle" class="small ta">438 ms</text>
+<circle cx="827.8" cy="171.0" r="5" class="fa"/>
+<text x="827.8" y="159.0" text-anchor="middle" class="small ta">96 ms</text>
+<circle cx="920.0" cy="68.8" r="5" class="fh"/>
+<text x="910.0" y="58.8" text-anchor="end" class="small th">3.6 s, fails</text>
+<circle cx="735.6" cy="84.2" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
+<circle cx="827.8" cy="49.4" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
+<path d="M735.6,84.2 L827.8,49.4" class="ln-h dash"/>
+<text x="725.6" y="88.2" text-anchor="end" class="small th">old band rule: 2.1 s</text>
+<text x="817.8" y="53.4" text-anchor="end" class="small th">7.2 s</text>
 </svg>
   </div>
-  <figcaption>The slowest 1% of requests (p99) on a log scale. It stays flat at a few milliseconds while every user keeps a connection, bends sharply once the server has to start asking users to reconnect, and crosses the contest's one-second limit at 400,000.</figcaption>
+  <figcaption>The slowest 1% of requests (p99) on a log scale. With the memory-based shedding rule it stays well under the one-second limit up to 400,000 users, then crosses it at 425,000. The hollow markers are the older connection-count rule on the same test build, failing at 375,000 and 400,000.</figcaption>
 </figure>
 <div class="col">
   <ol class="ladder">
@@ -882,35 +886,27 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       </dl>
     </li>
     <li>
-      <h4><span>325,000–350,000 USERS</span>Close to the cap, and why the band moved</h4>
+      <h4><span>350,000–400,000 USERS</span>Still nothing closed: memory has room</h4>
       <dl>
-        <dt>Server</dt><dd>Open connections approach the server's memory-derived cap of 380,000. With the shipped band, which only starts closing connections at 95% of the cap, nothing is closed yet, and CPU stays around 35%.</dd>
-        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users, and 1,386 MB in total at the peak.</dd>
-        <dt>Users see</dt><dd>p99 4.2 ms at 325,000 and 4.3 ms at 350,000 on the frozen-configuration build, no errors; the final build passed 350,000 twice with p99 45–52 ms. With the old band (start at 85%, stop at 75%), closing switched on during the end-of-ramp rush and never switched off: about 3,100 reconnects a second and p99 14 ms at 325,000, then about 4,700 a second and 39 ms at 350,000. An earlier build with the old band failed two of three runs at 350,000, with p99 1.3–2.9 s. That is why the band moved.</dd>
+        <dt>Server</dt><dd>All 400,000 connections stay open, because more than 400 MB of memory is still free and the shedding rule only reacts to memory. CPU rises to about 54% at 400,000, at 12.7 µs per request.</dd>
+        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users and 1,488 MB at 400,000, with 1,591 MB in total at the peak.</dd>
+        <dt>Users see</dt><dd>p99 116 ms at 350,000 and 97 ms at 400,000, no errors: both pass. The older rule, which shed by connection count once open connections reached 95% of a 380,000 cap, started hanging up here. On the same test build it made 3,100–5,100 users a second reconnect, pushed CPU to 84–90%, and failed at both 375,000 (p99 2.1 s) and 400,000 (7.2 s). That's why the memory rule replaced it.</dd>
       </dl>
     </li>
     <li class="edge">
-      <h4><span>375,000 USERS</span>The knee: shedding switches on and CPU runs short</h4>
+      <h4><span>425,000 USERS</span>Memory gets tight, and CPU runs out</h4>
       <dl>
-        <dt>Server</dt><dd>The rush at the end of the ramp pushes open connections to about 358,000, close to 95% of the cap, and shedding engages: about 8% of replies say <code>Connection: close</code>, around 3,100 users a second reconnect, and CPU rises to about 66%.</dd>
-        <dt>Kernel and memory</dt><dd>About 1.33 GB of kernel memory, 1,521 MB in total at the peak.</dd>
-        <dt>Users see</dt><dd>This is the knee, where results flip between runs. p99 was 451 ms on the frozen-configuration build and 686 ms in one run of the PR's build, both passes, while the PR build's other run failed at 1.6 s. The cause is the CPU running short. The io_uring checkpoint runs inside the event loop, and with the loop this busy it fell behind: in the failed run one checkpoint pass took 7.2 seconds, and writes piled up behind the gate.</dd>
-      </dl>
-    </li>
-    <li class="edge">
-      <h4><span>400,000 USERS</span>CPU runs out</h4>
-      <dl>
-        <dt>Server</dt><dd>CPU saturates at about 95%. Around 4,500 users a second are reconnecting, and every reconnect is extra work for a CPU that has none to spare, so requests start to queue.</dd>
-        <dt>Kernel and memory</dt><dd>Requests waiting in socket queues take 271 MB on top of the connections' own memory, and the total peaks at 1,925 MB.</dd>
-        <dt>Users see</dt><dd>p95 1.3 s and p99 7.0 s. Nothing errors out, but it's far over the limit: a fail.</dd>
+        <dt>Server</dt><dd>On the test build, free memory finally fell far enough for shedding to start: about 8% of replies said <code>Connection: close</code> and around 1,900 users a second reconnected, on top of a CPU already at 91%.</dd>
+        <dt>Kernel and memory</dt><dd>Kernel memory reached about 1.58 GB, requests began to queue, and the container ran out of memory and was killed. The team reads this as a CPU collapse: once the CPU can't keep up, queued requests and reconnects pile up until memory goes too.</dd>
+        <dt>Users see</dt><dd>p99 3.6 s and about a third of requests failed: a fail. The previous leader was also killed for running out of memory at 425,000. The PR's commit hasn't been run at 425,000.</dd>
       </dl>
     </li>
     <li>
       <h4><span>ON THE REAL XEON</span>A different wall comes first</h4>
       <dl>
-        <dt>Server</dt><dd>The contest machine has the same 2 GB but a different kernel, and there each open connection costs about 4.3 KB of kernel memory (experiment 19). That puts the wall at roughly 340,000 open connections.</dd>
-        <dt>Kernel and memory</dt><dd>So on the Xeon, memory rather than CPU is the first limit, and shedding has to start earlier than it did on the laptop. Each reconnect then costs CPU (about 8–9 µs on the Xeon, experiment 18).</dd>
-        <dt>Users see</dt><dd>Not measured at full scale: the 1-CPU test boxes can't generate that much load against themselves. The laptop's 350,000 is not guaranteed there.</dd>
+        <dt>Server</dt><dd>The contest machine has the same 2 GB but a different kernel, and there each open connection costs about 4.3 KB of kernel memory (experiment 19). That puts the wall at roughly 340,000 open connections, so free memory runs low sooner and shedding will start at a lower crowd size than on the laptop.</dd>
+        <dt>Kernel and memory</dt><dd>On that kernel, the memory the network can use for queued data is capped at about 175 MB, which limits how far queued requests can pile up. Each reconnect costs CPU (about 8–9 µs on the Xeon, experiment 18).</dd>
+        <dt>Users see</dt><dd>Not measured at full scale: the 1-CPU test boxes can't generate that much load against themselves. The laptop's 400,000 is not guaranteed there.</dd>
       </dl>
     </li>
   </ol>
