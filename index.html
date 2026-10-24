@@ -741,7 +741,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <p class="eyebrow">Every trick has an off switch</p>
   <h2>How cursed would you like it?</h2>
   <p>Each unusual thing the server does can be switched off when it's built, one knob at a time, or all at once with <code>CURSED=boring</code>. The boring build is by-the-book: stock SQLite, ordinary SQL queries, SQLite's own file layer and checkpoints, plain one-at-a-time login checks, and the standard picohttpparser for every request. Both builds pass the contest's 42 checks, so you can measure exactly what each trick buys. A middle setting, <code>CURSED=lawful</code>, uses completely stock SQLite through its public API but keeps every trick outside the database.</p>
-  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the three builds used this much CPU per request: <strong>max 34 µs, lawful 41 µs, boring 44 µs</strong> (experiments 44–46, without profile-guided optimisation, on a build from just before the freeze; the frozen max build measured 37 µs in experiment 59, a run without gzip. At the frozen commit, the lawful and boring builds don't compile with gcc 13.3 on x86, and a one-line fix is being verified). So the curses, taken together, save roughly a quarter of the CPU per request, and the SQLite curses account for most of that. Most of the gap is the feed: 8.2 µs through SQLite's cursors against 23.2 µs through the spec's SQL (Xeon, experiment 15).</p>
+  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the three final builds used this much CPU per request: <strong>max 34 µs, lawful 43 µs, boring 47 µs</strong> (experiments 65–67, without profile-guided optimisation). All three pass the contest's 42 checks on the Xeon. So the curses, taken together, save roughly a quarter of the CPU per request, and the SQLite curses account for most of that. Most of the gap is the feed: 8.2 µs through SQLite's cursors against 23.2 µs through the spec's SQL (Xeon, experiment 15).</p>
 </div>
 <div class="col tbl">
   <table>
@@ -775,9 +775,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">the frozen max build, via the contest's own test script (experiment 59); earlier builds of all three modes too (36, 44–46). At the frozen commit (c83564f), the lawful and boring builds don't compile with gcc 13.3 on x86; a one-line fix is being verified, and the default build is unaffected</span></td></tr>
-      <tr><td>CPU per request, frozen max build</td><td class="num">37 µs</td><td>Xeon<span class="hw">experiment 59, 10,000 users at contest load (no gzip), loopback, PGO off; p99 4.3 ms</span></td></tr>
-      <tr><td>CPU per request: cursed vs. boring build</td><td class="num">34 vs 44 µs</td><td>Xeon<span class="hw">pre-freeze builds, experiments 44–46, 10,000 users, loopback; lawful 41 µs</span></td></tr>
+      <tr><td>Contest test suite, final build</td><td class="num">42 / 42</td><td>Xeon<span class="hw">all three modes (max, lawful, boring) via the contest's own test script, experiments 65–67</span></td></tr>
+      <tr><td>CPU per request by build mode</td><td class="num">34 / 43 / 47 µs</td><td>Xeon<span class="hw">max / lawful / boring, final build, experiments 65–67; 10,000 users at contest load (no gzip), loopback, PGO off</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Commits lost in the engine's crash test of the write path</td><td class="num">0 of 60</td><td>Linux, Docker<span class="hw">engine crash test (test_crash), not a load test; before the fix that SQLite's own tests prompted: 39 of 40 lost</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
@@ -792,9 +791,9 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </table>
 </div>
 <div class="col">
-  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. Our highest pass is <strong>350,000 users</strong>, with the slowest 1% of requests at 4.3 ms and no errors. The previous leader passes 300,000 in three runs out of three and fails 350,000 on latency. That's local arm64 with 1-minute holds, not an organizer score.</p>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. Our highest pass is <strong>350,000 users</strong>, with the slowest 1% of requests at 4.3 ms and no errors. The previous leader passes 300,000 in three runs out of three and fails 350,000 on latency. At 375,000 ours passed two runs out of three and 400,000 failed, so 350,000 stays the headline. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
-  <div class="plain"><b>Not yet known</b>The actual score. The configuration is frozen, and the final runs of the frozen build on the Xeon are under way. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
+  <div class="plain"><b>Not yet known</b>The actual score. The final build is frozen and passes the contest's checks on the Xeon in all three modes. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
 </div>
 </section>
 
