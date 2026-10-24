@@ -125,6 +125,17 @@ input[type="range"] { width: 100%; max-width: 520px; accent-color: var(--accent)
 .pill.ok { background: var(--accent-soft); color: var(--accent); }
 .pill.bad { background: var(--hot-soft); color: var(--hot); }
 
+/* failure ladder */
+ol.ladder { list-style: none; padding: 0; margin: 22px 0; display: grid; gap: 14px; counter-reset: rung; }
+ol.ladder > li { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 0 10px 10px 0; padding: 14px 16px; }
+ol.ladder > li.edge { border-left-color: var(--hot); }
+ol.ladder h4 { margin: 0 0 8px; font-size: 1.02rem; }
+ol.ladder h4 span { font: 600 0.74rem/1 var(--f-mono); color: var(--muted); margin-right: 8px; letter-spacing: 0.06em; }
+ol.ladder dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 0.94rem; }
+ol.ladder dt { font: 600 0.72rem/1.6 var(--f-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+ol.ladder dd { margin: 0; }
+@media (max-width: 560px) { ol.ladder dl { grid-template-columns: 1fr; } ol.ladder dt { margin-top: 4px; } }
+
 /* results */
 .tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); margin: 20px 0; }
 table { border-collapse: collapse; width: 100%; font-size: 0.92rem; min-width: 560px; }
@@ -261,6 +272,7 @@ html { scroll-behavior: smooth; }
     <li><a href="#reply"><span>STAGE 5</span>Reply and the memory wall</a></li>
     <li><a href="#broker"><span>BEHIND THE SCENES</span>The Xeon broker</a></li>
     <li><a href="#knobs"><span>EXTRA</span>Every trick's off switch</a></li>
+    <li><a href="#breaking"><span>EXTRA</span>How it breaks under load</a></li>
   </ol>
 </nav>
 
@@ -793,7 +805,115 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. Our highest pass is <strong>350,000 users</strong>, with the slowest 1% of requests at 4.3 ms and no errors. The previous leader passes 300,000 in three runs out of three and fails 350,000 on latency. At 375,000 ours passed two runs out of three and 400,000 failed, so 350,000 stays the headline. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
+  <p>For what happens inside the server at each load level, see <a href="#breaking">how it breaks, step by step</a>.</p>
   <div class="plain"><b>Not yet known</b>The actual score. The final build is frozen and passes the contest's checks on the Xeon in all three modes. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
+</div>
+</section>
+
+<!-- ============================================================ FAILURE LADDER -->
+<section id="breaking">
+<div class="col">
+  <p class="eyebrow">Turning up the crowd</p>
+  <h2>How it breaks, step by step</h2>
+  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build just before the freeze; from 325,000 they come from the frozen configuration.</p>
+</div>
+<figure class="wide">
+  <div class="fig">
+<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale: about 4 to 7 ms from 200,000 to 350,000 users, 451 ms at 375,000, 7 seconds at 400,000, above the 1-second limit. The old shedding band gave 39 ms at 350,000.">
+<line x1="90" y1="300.0" x2="920" y2="300.0" class="ln" style="stroke-opacity:0.35"/>
+<text x="80" y="304.0" text-anchor="end" class="mu small">1 ms</text>
+<line x1="90" y1="235.0" x2="920" y2="235.0" class="ln" style="stroke-opacity:0.35"/>
+<text x="80" y="239.0" text-anchor="end" class="mu small">10 ms</text>
+<line x1="90" y1="170.0" x2="920" y2="170.0" class="ln" style="stroke-opacity:0.35"/>
+<text x="80" y="174.0" text-anchor="end" class="mu small">100 ms</text>
+<line x1="90" y1="105.0" x2="920" y2="105.0" class="ln-h dash" style="stroke-opacity:1"/>
+<text x="80" y="109.0" text-anchor="end" class="mu small">1 s</text>
+<line x1="90" y1="40.0" x2="920" y2="40.0" class="ln" style="stroke-opacity:0.35"/>
+<text x="80" y="44.0" text-anchor="end" class="mu small">10 s</text>
+<text x="920" y="99.0" text-anchor="end" class="th small">contest limit: p99 under 1 s</text>
+<line x1="90.0" y1="300" x2="90.0" y2="306" class="ln"/>
+<text x="90.0" y="322" text-anchor="middle" class="mu small">200k</text>
+<line x1="193.8" y1="300" x2="193.8" y2="306" class="ln"/>
+<line x1="297.5" y1="300" x2="297.5" y2="306" class="ln"/>
+<text x="297.5" y="322" text-anchor="middle" class="mu small">250k</text>
+<line x1="401.2" y1="300" x2="401.2" y2="306" class="ln"/>
+<line x1="505.0" y1="300" x2="505.0" y2="306" class="ln"/>
+<text x="505.0" y="322" text-anchor="middle" class="mu small">300k</text>
+<line x1="608.8" y1="300" x2="608.8" y2="306" class="ln"/>
+<text x="608.8" y="322" text-anchor="middle" class="mu small">325k</text>
+<line x1="712.5" y1="300" x2="712.5" y2="306" class="ln"/>
+<text x="712.5" y="322" text-anchor="middle" class="mu small">350k</text>
+<line x1="816.2" y1="300" x2="816.2" y2="306" class="ln"/>
+<text x="816.2" y="322" text-anchor="middle" class="mu small">375k</text>
+<line x1="920.0" y1="300" x2="920.0" y2="306" class="ln"/>
+<text x="920.0" y="322" text-anchor="middle" class="mu small">400k</text>
+<text x="505" y="344" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds)</text>
+<path d="M90.0,258.2 L297.5,245.1 L505.0,249.0 L608.8,259.5 L712.5,258.8 L816.2,127.5 L920.0,49.9" class="ln-a"/>
+<circle cx="90.0" cy="258.2" r="5" class="fa"/>
+<text x="100.0" y="246.2" text-anchor="start" class="small ta">4.4 ms</text>
+<circle cx="297.5" cy="245.1" r="5" class="fa"/>
+<text x="297.5" y="233.1" text-anchor="middle" class="small ta">7.0 ms</text>
+<circle cx="505.0" cy="249.0" r="5" class="fa"/>
+<text x="505.0" y="237.0" text-anchor="middle" class="small ta">6.1 ms</text>
+<circle cx="608.8" cy="259.5" r="5" class="fa"/>
+<text x="608.8" y="247.5" text-anchor="middle" class="small ta">4.2 ms</text>
+<circle cx="712.5" cy="258.8" r="5" class="fa"/>
+<text x="712.5" y="246.8" text-anchor="middle" class="small ta">4.3 ms</text>
+<circle cx="816.2" cy="127.5" r="5" class="fa"/>
+<text x="816.2" y="115.5" text-anchor="middle" class="small ta">451 ms</text>
+<text x="816.2" y="147.5" text-anchor="middle" class="mu small">≈358k open, shedding</text>
+<circle cx="920.0" cy="49.9" r="5" class="fh"/>
+<text x="910.0" y="37.9" text-anchor="end" class="small th">7.0 s</text>
+<text x="910.0" y="69.9" text-anchor="end" class="mu small">≈361k open, CPU 95%</text>
+<circle cx="712.5" cy="196.9" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
+<text x="722.5" y="200.9" class="small th">39 ms with the old 85%/75% band</text>
+</svg>
+  </div>
+  <figcaption>The slowest 1% of requests (p99) on a log scale. It stays flat at a few milliseconds while every user keeps a connection, bends sharply once the server has to start asking users to reconnect, and crosses the contest's one-second limit at 400,000.</figcaption>
+</figure>
+<div class="col">
+  <ol class="ladder">
+    <li>
+      <h4><span>200,000–300,000 USERS</span>Everyone keeps their connection</h4>
+      <dl>
+        <dt>Server</dt><dd>Nothing is ever closed. Each request costs 12–15 µs of CPU, and the event loop is busy only 22–40% of the time.</dd>
+        <dt>Kernel and memory</dt><dd>Almost all the memory is the kernel's bookkeeping for open connections: 745 MB at 200,000 users and 1,116 MB at 300,000. The server program itself stays around 30–34 MB.</dd>
+        <dt>Users see</dt><dd>The slowest 1% of requests take 4–7 ms. No errors.</dd>
+      </dl>
+    </li>
+    <li>
+      <h4><span>325,000–350,000 USERS</span>Close to the cap, and why the band moved</h4>
+      <dl>
+        <dt>Server</dt><dd>Open connections approach the server's memory-derived cap of 380,000. With the shipped band, which only starts closing connections at 95% of the cap, nothing is closed yet, and CPU stays around 35%.</dd>
+        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users, and 1,386 MB in total at the peak.</dd>
+        <dt>Users see</dt><dd>p99 4.2 ms at 325,000 and 4.3 ms at 350,000, no errors. With the old band (start at 85%, stop at 75%), closing switched on during the end-of-ramp rush and never switched off: about 3,100 reconnects a second and p99 14 ms at 325,000, then about 4,700 a second and 39 ms at 350,000. An earlier build with the old band failed two of three runs at 350,000, with p99 1.3–2.9 s. That is why the band moved.</dd>
+      </dl>
+    </li>
+    <li class="edge">
+      <h4><span>375,000 USERS</span>Shedding switches on: passes, just</h4>
+      <dl>
+        <dt>Server</dt><dd>The rush at the end of the ramp pushes open connections to about 358,000, close to 95% of the cap, and shedding engages: about 8% of replies say <code>Connection: close</code>, around 3,100 users a second reconnect, and CPU rises to about 66%.</dd>
+        <dt>Kernel and memory</dt><dd>About 1.33 GB of kernel memory, 1,521 MB in total at the peak.</dd>
+        <dt>Users see</dt><dd>p99 451 ms: under the one-second limit, so it passes. Two of three runs passed. In the third, on the final build, one database checkpoint pass took 7.2 seconds while memory jumped, and p99 reached 1.6 s, a fail.</dd>
+      </dl>
+    </li>
+    <li class="edge">
+      <h4><span>400,000 USERS</span>CPU runs out</h4>
+      <dl>
+        <dt>Server</dt><dd>CPU saturates at about 95%. Around 4,500 users a second are reconnecting, and every reconnect is extra work for a CPU that has none to spare, so requests start to queue.</dd>
+        <dt>Kernel and memory</dt><dd>Requests waiting in socket queues take 271 MB on top of the connections' own memory, and the total peaks at 1,925 MB.</dd>
+        <dt>Users see</dt><dd>p95 1.3 s and p99 7.0 s. Nothing errors out, but it's far over the limit: a fail.</dd>
+      </dl>
+    </li>
+    <li>
+      <h4><span>ON THE REAL XEON</span>A different wall comes first</h4>
+      <dl>
+        <dt>Server</dt><dd>The contest machine has the same 2 GB but a different kernel, and there each open connection costs about 4.3 KB of kernel memory (experiment 19). That puts the wall at roughly 340,000 open connections.</dd>
+        <dt>Kernel and memory</dt><dd>So on the Xeon, memory rather than CPU is the first limit, and shedding has to start earlier than it did on the laptop. Each reconnect then costs CPU (about 8–9 µs on the Xeon, experiment 18).</dd>
+        <dt>Users see</dt><dd>Not measured at full scale: the 1-CPU test boxes can't generate that much load against themselves. The laptop's 350,000 is not guaranteed there.</dd>
+      </dl>
+    </li>
+  </ol>
 </div>
 </section>
 
