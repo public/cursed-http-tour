@@ -149,7 +149,7 @@ html { scroll-behavior: smooth; }
 <header class="hero">
   <div class="col" style="max-width:none">
     <p class="eyebrow">cursed-http · a guided tour</p>
-    <h1>Trying to serve 500,000 people from a $12 computer by doing everything the hard way</h1>
+    <h1>Serving a crowd from a $12 computer by doing everything the hard way</h1>
     <p class="lede">A walkthrough, for curious non-experts, of a web server built for a speed contest. It uses every trick its authors could justify, and a few they mostly built because they could.</p>
     <div class="specs" aria-label="The machine">
       <div><b>1 CPU core</b>Intel Xeon Platinum 8260</div>
@@ -172,7 +172,7 @@ html { scroll-behavior: smooth; }
   </ul>
   <p>That's the only number that counts. Not elegance, not requests per second. Every decision on this page was judged by one question: <em>does it let us hold more users?</em></p>
 
-  <div class="plain"><b>In plain terms</b>Each user only asks for something about once every 24 seconds, so the goal of 500,000 users is about 21,000 requests a second. One core has to deal with each in roughly 47 millionths of a second (µs), on average, forever.</div>
+  <div class="plain"><b>In plain terms</b>Each simulated user asks for something about once every 10 seconds. The previous winner held 264,000 users, which is about 25,000 requests a second. One core has to deal with each in roughly 40 millionths of a second (µs), on average, forever.</div>
 </div>
 
 <div class="col">
@@ -200,7 +200,7 @@ html { scroll-behavior: smooth; }
   <figcaption>The whole-request number and the database share are measured on the rented Xeon test box (experiments 26 and 16). Parsing and login costs come from separate benchmarks on the same box. Only about 1 request in 13 carries a login, so its average cost is tiny.</figcaption>
 </figure>
 <div class="col">
-  <p>So why make parsing 3× faster, if it was never the bottleneck? Partly because the project's brief was "maximally cursed", and partly because each nanosecond saved is free. The real wins, though, come from the parts that move the big bar: how the server talks to the kernel, how it touches the database, and how much <strong>memory</strong> each user costs. Memory turns out to be the wall that matters most.</p>
+  <p>So why make parsing 3× faster, if it was never the bottleneck? Partly because the project's brief was "maximally cursed", and partly because each nanosecond saved is free. The real wins, though, come from the parts that move the big bar: how the server talks to the kernel, how it touches the database, and how much <strong>memory</strong> each user costs. At the contest's load, both CPU and memory run out somewhere around 250,000–340,000 users by current estimates, so both matter.</p>
 </div>
 
 <div class="col">
@@ -302,7 +302,7 @@ html { scroll-behavior: smooth; }
 </figure>
 <div class="col">
   <h3>The 65,535 problem, and the multi-ring trick</h3>
-  <p>The contest machine limits each program to 65,535 open files, and on Linux every network connection normally counts as a file. That would cap the server at about 65,000 users, far short of the 500,000 goal.</p>
+  <p>The contest machine limits each program to 65,535 open files, and on Linux every network connection normally counts as a file. That would cap the server at about 65,000 users, far short of the 264,000 users the previous winner held.</p>
   <p>io_uring has an escape hatch called <strong>direct descriptors</strong>: connections that live only inside a ring's private table and never become ordinary files. Each ring's table also tops out at 65,535, so the server simply runs <em>several rings</em> and adds another whenever the current ones fill up. Here's the code that asks the kernel to accept a new connection straight into a free slot of a ring's table:</p>
   <div class="code">
     <div class="src"><span>explore/io/loop.c</span><span>raw io_uring, no helper library</span></div>
@@ -628,15 +628,15 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <div class="stage-tag"><i>5</i>REPLY</div>
   <h2>The memory wall, and hanging up on purpose</h2>
   <p>Replies are assembled in a per-batch scratch area and handed to the kernel only after the commit. The interesting decision is a single header: whether the reply says <code>Connection: close</code>.</p>
-  <p>Remember the first chart: CPU isn't the scarce thing. At this scale, <strong>memory</strong> is. Every open connection costs the kernel about <strong>4.3 KB</strong>, measured on the Xeon, and that can't be shrunk without admin rights. The box has about 1,630 MB free. After leaving room for the server itself and its database cache, it runs out somewhere around <strong>340,000 idle connections</strong>. That's well short of the 500,000-user goal, so keeping one connection per user can't get there.</p>
+  <p>CPU is one wall; <strong>memory</strong> is the other. Every open connection costs the kernel about <strong>4.3 KB</strong>, measured on the Xeon, and that can't be shrunk without admin rights. The box has about 1,630 MB free. After leaving room for the server itself and its database cache, it runs out somewhere around <strong>340,000 idle connections</strong>. Past that, keeping one connection per user is impossible.</p>
   <p>The way past the wall comes from reading the organizer's load generator. Simulated users spend most of their time "reading", time spent reconnecting isn't counted as delay, and a user whose connection was closed simply opens a new one next time. So near the memory limit, the server attaches <code>Connection: close</code> to a fraction of replies. Idle users then share fewer open connections, and the server can carry more users than it has sockets.</p>
 </div>
 <div class="col">
   <div class="demo" id="mem-demo">
     <h4>Play with it: users vs. the memory wall</h4>
-    <p class="hint">A rough model: 4.3 KB of kernel memory per open connection, against the ~1,430 MB left of the box's 1,630 MB once about 200 MB is set aside for the server and its database cache. With shedding, the small Xeon test settled at 2.75 users per open connection. That test used 5,000 users, so treat the shedding line as an illustration.</p>
-    <label for="users">Simulated users: <b id="users-val" class="readout">500,000</b></label>
-    <input type="range" id="users" min="50000" max="800000" step="10000" value="500000">
+    <p class="hint">A rough model: 4.3 KB of kernel memory per open connection, against the ~1,430 MB left of the box's 1,630 MB once about 200 MB is set aside for the server and its database cache. With shedding, the small Xeon test settled at 2.75 users per open connection. That test used 5,000 users, so treat the shedding line as an illustration. The model ignores CPU, which at the contest's load may run out first.</p>
+    <label for="users">Simulated users: <b id="users-val" class="readout">400,000</b></label>
+    <input type="range" id="users" min="50000" max="800000" step="10000" value="400000">
     <div class="readout" style="margin-top:12px">Everyone keeps a connection open</div>
     <div class="meter" aria-hidden="true"><i id="m-keep"></i><span class="wall" style="left:100%"></span></div>
     <div class="row readout"><span id="t-keep"></span><span id="p-keep"></span></div>
@@ -646,7 +646,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </div>
 </div>
 <div class="col">
-  <p>Hanging up isn't free. Each reconnect costs the server about 8–9 µs of extra CPU on the Xeon (experiment 18), but there's CPU to spare at the wall. Shedding only kicks in near the memory-derived cap, it never interrupts a request in progress, and it applies to everyone alike. In the Xeon test it caused <strong>zero errors in 129,730 requests</strong> (experiment 6). The decision itself is a coin flip weighted by how close to the wall the server is:</p>
+  <p>Hanging up isn't free. Each reconnect costs the server about 8–9 µs of extra CPU on the Xeon (experiment 18), so shedding only pays if CPU is left over when memory runs out. At the contest's load that margin is thin, and it's being re-measured. Shedding only kicks in near the memory-derived cap, it never interrupts a request in progress, and it applies to everyone alike. In the Xeon test it caused <strong>zero errors in 129,730 requests</strong> (experiment 6). The decision itself is a coin flip weighted by how close to the wall the server is:</p>
   <div class="code">
     <div class="src"><span>explore/io/loop.c</span><span>close_frac rises as free memory falls</span></div>
 <pre><code class="language-c">int loop_close_hint(loop_t *L, loop_conn id)
@@ -659,7 +659,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
     return 0;
 }</code></pre>
   </div>
-  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users, where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, measured with the lean receive mode that's now an opt-in. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
+  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users (under a lighter load than the contest uses), where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, measured with the lean receive mode that's now an opt-in. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -766,16 +766,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Cached log (WAL) memory</td><td class="num">15–18 MB</td><td>Xeon<span class="hw">experiments 39–40 (was ~256 MB)</span></td></tr>
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
-      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass, lean receive mode</span></td></tr>
-      <tr><td>Local probe at 400,000 users</td><td class="num">pass, p99 4.5 ms</td><td>Laptop, Docker<span class="hw">scoring ramp + 60 s hold, 0 errors, 1,388 MB peak; the leader also passes (p99 12 ms, 1,627 MB)</span></td></tr>
-      <tr><td>Local probe at 500,000 users</td><td class="num">pass, p99 77 ms</td><td>Laptop, Docker<span class="hw">scoring ramp + 60 s hold, 0 errors, 1,439 MB peak; the leader also passes (p99 355 ms, 2,041 MB)</span></td></tr>
-      <tr><td>Local probe at 600,000 users</td><td class="num">fail</td><td>Laptop, Docker<span class="hw">CPU at 100%, p99 15 s</span></td></tr>
+      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
+      <tr><td>Local users-held probes</td><td class="num">being re-run</td><td>Laptop, Docker<span class="hw">earlier probes used a lighter load than the contest's scoring load (mload think-scale 2.5 instead of 1), so their user counts don't apply; re-running at scoring load</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>The local arena, which runs the organizer's load generator against each server boxed into one CPU and 2 GB on a laptop, has now reached the goal in a quick probe: <strong>500,000 users passed</strong>, with the slowest 1% of requests under 80 ms and no errors, while 600,000 ran the CPU out. The server peaked at 1,439 MB of its 2 GB there.</p>
-  <div class="plain"><b>Not yet known</b>The actual score. Those probes hold the full crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machines. The five-minute hold at the top passing count is next. Until it and the organizer's own run happen, the claims stop at the table above.</div>
+  <p>A correction along the way: the local arena's first user counts were measured under a lighter load than the contest uses. Its simulated users paused 2.5 times longer between requests, so each asked for less than half as much. Those counts have been withdrawn, and the probes are being re-run at the contest's real load.</p>
+  <div class="plain"><b>Not yet known</b>The actual score, and how many users the server holds at the contest's load. That needs the arena's re-run, then the organizer's own five-minute run. Until then, the claims stop at the table above.</div>
 </div>
 </section>
 
