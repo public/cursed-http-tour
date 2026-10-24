@@ -319,7 +319,7 @@ html { scroll-behavior: smooth; }
     else r-&gt;singles++;
 }</code></pre>
   </div>
-  <p>Receiving is tuned for memory, not just speed. Most connections sit idle most of the time, so each idle one holds only a cheap standing "tell me when data arrives" ticket (a multishot <em>poll</em>), rather than a parked receive. That saves about 190 bytes per connection on this kernel, and 608 on newer ones. When data shows up, a single receive pulls it into a shared pool of buffers. This mode had a bug the local arena caught at 400,000 users: when a huge crowd of connections closed at the same moment, their memory lingered for about a second, and the server ran out. It's fixed (a 60,000-connection mass-close test now leaves nothing behind), and a re-run at 400,000 is pending. The server also keeps 256 accepts in flight, because on this kernel version the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
+  <p>Receiving uses the same idea. Each connection keeps one standing ("multishot") receive armed, so the kernel drops every new request into a shared pool of buffers without being asked again. The team also built a leaner mode where idle connections hold only a cheap "tell me when data arrives" ticket (a multishot <em>poll</em>). It saves about 190 bytes per connection on this kernel, but it lost a bigger fight: when 300,000 connections closed at once, it left about 631 MB of socket buffers behind for a moment, enough to run the box out of memory. So the standing receive is the default, and the lean mode is an opt-in. The server also keeps 256 accepts in flight, because on this kernel version the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
 </div>
 </section>
 
@@ -500,7 +500,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </div>
 
   <h3>Then: patching SQLite itself</h3>
-  <p>The team tried changes inside SQLite's own source and kept only the three that won on the real Xeon. Each leaves the file format, the query results and the bytes written to disk identical to stock SQLite. One example: when you look up row 1,209 right after row 1,208, they're almost certainly on the same leaf page, yet stock SQLite climbs back to the root of the tree every time. The <code>btree-sameleaf</code> patch checks the leaf first.</p>
+  <p>The team tried changes inside SQLite's own source and ships the two that won on the real Xeon and passed SQLite's own test suite. Each leaves the file format, the query results and the bytes written to disk identical to stock SQLite. One example: when you look up row 1,209 right after row 1,208, they're almost certainly on the same leaf page, yet stock SQLite climbs back to the root of the tree every time. The <code>btree-sameleaf</code> patch checks the leaf first.</p>
 </div>
 <figure class="wide">
   <div class="fig">
@@ -544,7 +544,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 +  }
    rc = moveToRoot(pCur);</code></pre>
   </div>
-  <p>The other two: <code>btree-interp</code> searches a page the way you'd look up a word in a dictionary (row 1,209 on a page of rows 1,101–1,250 is probably about 70% of the way in), rather than always halving. <code>pcache1-maxkey</code> removes a needless scan of SQLite's page cache at every commit. Not every idea survived: putting SIMD <em>inside</em> SQLite's page search lost on the Xeon, so it was dropped.</p>
+  <p>The other shipped patch, <code>pcache1-maxkey</code>, removes a needless scan of SQLite's page cache at every commit. A third, <code>btree-interp</code>, searches a page the way you'd look up a word in a dictionary (row 1,209 on a page of rows 1,101–1,250 is probably about 70% of the way in), rather than always halving. It was faster on the Xeon, but it failed one of SQLite's own tests: on a deliberately corrupted page with duplicate row ids, it found a different duplicate than stock SQLite does. Valid databases are unaffected, but "identical to stock" is the bar, so it's off by default and only an opt-in. Not every idea survived: putting SIMD <em>inside</em> SQLite's page search lost on the Xeon, so it was dropped.</p>
 
   <h3>Saving writes: one disk write per commit</h3>
   <p>SQLite in "WAL" mode appends each changed page to a log file. It writes each page as two pieces, a 24-byte header and then the 4 KB page, so a commit that touches 10 pages makes 20 separate write calls. The server slips a thin layer between SQLite and the disk that holds the pieces in memory and sends the whole commit as <strong>one write</strong>. It knows the commit is complete because SQLite marks the last frame's header.</p>
@@ -659,7 +659,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
     return 0;
 }</code></pre>
   </div>
-  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users, where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
+  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users, where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, measured with the lean receive mode that's now an opt-in. That's laptop Docker, not the Xeon, but it's the same direction. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -731,7 +731,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>Knob</th><th>Cursed (submitted)</th><th>Boring</th></tr></thead>
     <tbody>
-      <tr><td><code>SQLITE_PATCHES</code></td><td>the three B-tree and cache patches</td><td>stock SQLite 3.54.1</td></tr>
+      <tr><td><code>SQLITE_PATCHES</code></td><td>two B-tree and cache patches (a third is opt-in)</td><td>stock SQLite 3.54.1</td></tr>
       <tr><td><code>DB_READS</code></td><td>direct B-tree cursor reads</td><td>the spec's SQL queries</td></tr>
       <tr><td><code>DB_VFS</code></td><td>one-write-per-commit file layer</td><td>SQLite's own</td></tr>
       <tr><td><code>DB_CKPT</code></td><td>background checkpoint thread + write gate</td><td>SQLite's autocheckpoint</td></tr>
@@ -766,14 +766,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Cached log (WAL) memory</td><td class="num">15–18 MB</td><td>Xeon<span class="hw">experiments 39–40 (was ~256 MB)</span></td></tr>
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
-      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass</span></td></tr>
+      <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass, lean receive mode</span></td></tr>
       <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass</span></td></tr>
-      <tr><td>Local 2-minute probe at 400k</td><td class="num">passed, then OOM</td><td>Laptop, Docker<span class="hw">p99 297 ms, then out of memory when every connection closed at the end (bug since fixed; re-run pending). The leader also ran out of memory there and failed on latency</span></td></tr>
+      <tr><td>Local 2-minute probe at 400k</td><td class="num">passed, then OOM</td><td>Laptop, Docker<span class="hw">p99 297 ms, then out of memory when every connection closed at the end (with the lean receive mode, now opt-in; re-run with the default pending). The leader also ran out of memory there and failed on latency</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <div class="plain"><b>Not yet known</b>The actual score. That needs the organizer's full search (two-minute probes, then a five-minute hold) on a rig that can drive 500,000 users, and no such run has finished. Also pending: re-running the 400,000-user arena probe now that the mass-close memory bug is fixed. Until both are done, the claims stop at the table above.</div>
+  <div class="plain"><b>Not yet known</b>The actual score. That needs the organizer's full search (two-minute probes, then a five-minute hold) on a rig that can drive 500,000 users, and no such run has finished. Also pending: re-running the 400,000-user arena probe with the default receive mode. Until both are done, the claims stop at the table above.</div>
 </div>
 </section>
 
