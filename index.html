@@ -894,7 +894,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <dl>
         <dt>Server</dt><dd>The rush at the end of the ramp pushes open connections to about 358,000, close to 95% of the cap, and shedding engages: about 8% of replies say <code>Connection: close</code>, around 3,100 users a second reconnect, and CPU rises to about 66%.</dd>
         <dt>Kernel and memory</dt><dd>About 1.33 GB of kernel memory, 1,521 MB in total at the peak.</dd>
-        <dt>Users see</dt><dd>p99 451 ms: under the one-second limit, so it passes. Two of three runs passed. In the third, on the final build, one database checkpoint pass took 7.2 seconds while memory jumped, and p99 reached 1.6 s, a fail.</dd>
+        <dt>Users see</dt><dd>p99 451 ms: under the one-second limit, so it passes. Two of three runs passed. The third, on the final build, failed with p99 1.6 s. In that run one database checkpoint pass took 7.2 seconds and memory jumped at the same time; the exact cause is still being pinned down, and a fix is being tested.</dd>
       </dl>
     </li>
     <li class="edge">
