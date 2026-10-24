@@ -767,13 +767,15 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe, both pass, lean receive mode</span></td></tr>
-      <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass</span></td></tr>
-      <tr><td>Local 2-minute probe at 400k</td><td class="num">passed, then OOM</td><td>Laptop, Docker<span class="hw">p99 297 ms, then out of memory when every connection closed at the end (with the lean receive mode, now opt-in; re-run with the default pending). The leader also ran out of memory there and failed on latency</span></td></tr>
+      <tr><td>Local probe at 400,000 users</td><td class="num">pass, p99 4.5 ms</td><td>Laptop, Docker<span class="hw">scoring ramp + 60 s hold, 0 errors, 1,388 MB peak; the leader also passes (p99 12 ms, 1,627 MB)</span></td></tr>
+      <tr><td>Local probe at 500,000 users</td><td class="num">pass, p99 77 ms</td><td>Laptop, Docker<span class="hw">scoring ramp + 60 s hold, 0 errors, 1,439 MB peak; the leader also passes (p99 355 ms, 2,041 MB)</span></td></tr>
+      <tr><td>Local probe at 600,000 users</td><td class="num">fail</td><td>Laptop, Docker<span class="hw">CPU at 100%, p99 15 s</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <div class="plain"><b>Not yet known</b>The actual score. That needs the organizer's full search (two-minute probes, then a five-minute hold) on a rig that can drive 500,000 users, and no such run has finished. Also pending: re-running the 400,000-user arena probe with the default receive mode. Until both are done, the claims stop at the table above.</div>
+  <p>The local arena, which runs the organizer's load generator against each server boxed into one CPU and 2 GB on a laptop, has now reached the goal in a quick probe: <strong>500,000 users passed</strong>, with the slowest 1% of requests under 80 ms and no errors, while 600,000 ran the CPU out. The server peaked at 1,439 MB of its 2 GB there.</p>
+  <div class="plain"><b>Not yet known</b>The actual score. Those probes hold the full crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machines. The five-minute hold at the top passing count is next. Until it and the organizer's own run happen, the claims stop at the table above.</div>
 </div>
 </section>
 
