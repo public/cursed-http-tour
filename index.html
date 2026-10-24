@@ -796,13 +796,13 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
-      <tr><td>Our highest local pass, contest load</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">the PR's commit, 1-minute hold: p95 / p99 3.4 / 97 ms, 0 errors, 1,591 MB peak, 12.7 µs per request; 350,000 also passes (p99 116 ms); not an organizer score</span></td></tr>
+      <tr><td>Our highest local pass, contest load</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">the PR's commit, 1-minute hold: p95 / p99 3.4 / 97 ms, 0 errors, 1,591 MB peak, 12.7 µs per request; 350,000 also passes (p99 116 ms); 425,000 fails (killed for running out of memory); not an organizer score</span></td></tr>
       <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; passes every step from 300,000 (4 of 4) to 400,000; killed for running out of memory at 425,000</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>both servers hold 400,000 users</strong>. Ours does it with the slowest 1% of requests at 97 ms, about a seventh of the previous leader's 679 ms, with about 160 MB less memory and about 25% less CPU per request (12.7 against 17.0 µs). The leader is killed for running out of memory at 425,000; ours hasn't been run at 425,000 on the PR's commit. That's local arm64 with 1-minute holds, not an organizer score.</p>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>both servers hold 400,000 users</strong>. Ours does it with the slowest 1% of requests at 97 ms, about a seventh of the previous leader's 679 ms, with about 160 MB less memory and about 25% less CPU per request (12.7 against 17.0 µs). Both fail at 425,000: each is killed for running out of memory, ours with 15% of requests failing and the leader's with 14%. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
   <p>For what happens inside the server at each load level, see <a href="#breaking">how it breaks, step by step</a>.</p>
   <div class="plain"><b>Not yet known</b>The actual score. The load shedding is still being fine-tuned. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
@@ -814,11 +814,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Turning up the crowd</p>
   <h2>How it breaks, step by step</h2>
-  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze; 350,000 and 400,000 are the PR's commit; 375,000 and 425,000 come from a test build with the same shedding rule.</p>
+  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze; 350,000 and 400,000 are the PR's commit; 375,000 comes from a test build with the same shedding rule.</p>
 </div>
 <figure class="wide">
   <div class="fig">
-<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With headroom shedding p99 stays between about 4 ms and 440 ms from 200,000 to 400,000 users, all passes, and reaches 3.6 seconds at 425,000. The older band rule failed at 375,000 and 400,000 with 2.1 and 7.2 seconds.">
+<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With headroom shedding p99 stays between about 4 ms and 440 ms from 200,000 to 400,000 users, all passes, and reaches 4.6 seconds at 425,000. The older band rule failed at 375,000 and 400,000 with 2.1 and 7.2 seconds.">
 <line x1="90" y1="300.0" x2="920" y2="300.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="80" y="304.0" text-anchor="end" class="mu small">1 ms</text>
 <line x1="90" y1="235.0" x2="920" y2="235.0" class="ln" style="stroke-opacity:0.35"/>
@@ -851,7 +851,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <line x1="920.0" y1="300" x2="920.0" y2="306" class="ln"/>
 <text x="920.0" y="322" text-anchor="middle" class="mu small">425k</text>
 <text x="505" y="344" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds)</text>
-<path d="M90.0,258.2 L274.4,245.1 L458.9,249.0 L643.3,165.9 L735.6,128.3 L827.8,171.0 L920.0,68.8" class="ln-a"/>
+<path d="M90.0,258.2 L274.4,245.1 L458.9,249.0 L643.3,165.9 L735.6,128.3 L827.8,171.0 L920.0,61.7" class="ln-a"/>
 <circle cx="90.0" cy="258.2" r="5" class="fa"/>
 <text x="100.0" y="248.2" class="small ta">4.4 ms</text>
 <circle cx="274.4" cy="245.1" r="5" class="fa"/>
@@ -864,8 +864,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="735.6" y="150.3" text-anchor="middle" class="small ta">438 ms</text>
 <circle cx="827.8" cy="171.0" r="5" class="fa"/>
 <text x="827.8" y="159.0" text-anchor="middle" class="small ta">96 ms</text>
-<circle cx="920.0" cy="68.8" r="5" class="fh"/>
-<text x="910.0" y="58.8" text-anchor="end" class="small th">3.6 s, fails</text>
+<circle cx="920.0" cy="61.7" r="5" class="fh"/>
+<text x="910.0" y="51.7" text-anchor="end" class="small th">4.6 s, fails</text>
 <circle cx="735.6" cy="84.2" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
 <circle cx="827.8" cy="49.4" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
 <path d="M735.6,84.2 L827.8,49.4" class="ln-h dash"/>
@@ -894,11 +894,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       </dl>
     </li>
     <li class="edge">
-      <h4><span>425,000 USERS</span>Memory gets tight, and CPU runs out</h4>
+      <h4><span>425,000 USERS</span>Memory runs out before shedding starts</h4>
       <dl>
-        <dt>Server</dt><dd>On the test build, free memory finally fell far enough for shedding to start: about 8% of replies said <code>Connection: close</code> and around 1,900 users a second reconnected, on top of a CPU already at 91%.</dd>
-        <dt>Kernel and memory</dt><dd>Kernel memory reached about 1.58 GB, requests began to queue, and the container ran out of memory and was killed. The team reads this as a CPU collapse: once the CPU can't keep up, queued requests and reconnects pile up until memory goes too.</dd>
-        <dt>Users see</dt><dd>p99 3.6 s and about a third of requests failed: a fail. The previous leader was also killed for running out of memory at 425,000. The PR's commit hasn't been run at 425,000.</dd>
+        <dt>Server</dt><dd>On the PR's build, free memory sat at 425–432 MB, just above the 400 MB line where shedding begins, so nothing was shed. All 425,000 connections stayed open and CPU climbed to about 78%.</dd>
+        <dt>Kernel and memory</dt><dd>Kernel memory for the connections reached about 1.58 GB. Then a late surge of data waiting in socket queues (up to 229 MB) took the container past its 2 GB limit, faster than the one-second average could react, and it was killed. An earlier test build failed the same way, after its shedding had switched on at 91% CPU.</dd>
+        <dt>Users see</dt><dd>p99 4.6 s and 15% of requests failed: a fail. The previous leader was also killed for running out of memory at 425,000. On the real Xeon, the kernel caps queued socket data at about 175 MB, so this exact surge plays out differently there, which is still to be tested.</dd>
       </dl>
     </li>
     <li>
