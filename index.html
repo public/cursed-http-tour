@@ -151,6 +151,7 @@ html { scroll-behavior: smooth; }
     <p class="eyebrow">cursed-http · a guided tour</p>
     <h1>Serving a crowd from a $12 computer by doing everything the hard way</h1>
     <p class="lede">A walkthrough, for curious non-experts, of a web server built for a speed contest. It uses every trick its authors could justify, and a few they mostly built because they could.</p>
+    <p class="lede" style="font-size:1rem">The entry itself: <a href="https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/158">pull request #158</a> on the challenge repo (a draft).</p>
     <div class="specs" aria-label="The machine">
       <div><b>1 CPU core</b>Intel Xeon Platinum 8260</div>
       <div><b>2 GB</b>of memory, no swap</div>
@@ -774,7 +775,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36 via the contest's own test script; again for the max, lawful and boring builds (44–46)</span></td></tr>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">earlier builds: experiment 36 via the contest's own test script, and the max, lawful and boring builds (44–46); the frozen build's Xeon runs are in progress</span></td></tr>
       <tr><td>CPU per request: cursed vs. boring build</td><td class="num">34 vs 44 µs</td><td>Xeon<span class="hw">experiments 44–46, 10,000 users at contest load, loopback; lawful 41 µs</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Commits lost in the engine's crash test of the write path</td><td class="num">0 of 60</td><td>Linux, Docker<span class="hw">engine crash test (test_crash), not a load test; before the fix that SQLite's own tests prompted: 39 of 40 lost</span></td></tr>
