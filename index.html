@@ -499,7 +499,9 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 }</code></pre>
   </div>
 
-  <h3>Then: patching SQLite itself (three tried, one ships)</h3>
+  <p>The feed's other job is finding the 20 posts' authors. Those lookups go out as one batch: the engine sorts the 20 keys, walks the user table once, and lets neighbouring keys share each page it fetches. Inside a page it guesses where a row id sits, because ids are dense, rather than halving the range every time. It's checked against SQLite's own seek on 714,693 keys with no mismatches, and it made the whole feed another 5–11% faster on the Xeon (experiment 53).</p>
+
+  <h3>Then: patching SQLite itself (four tried, one ships)</h3>
   <p>The team also tried changes inside SQLite's own source. The bar for keeping one was strict: faster on the real Xeon, the same file format, query results and bytes on disk as stock SQLite, and the same results on SQLite's own test suite. Three patches got as far as the Xeon. Only one survived to the end, and the other two are good examples of why measuring matters.</p>
   <p>The first one: when you look up row 1,209 right after row 1,208, they're almost certainly on the same leaf page, yet stock SQLite climbs back to the root of the tree every time. The <code>btree-sameleaf</code> patch checks the leaf first.</p>
 </div>
@@ -547,6 +549,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </div>
   <p>The second, <code>btree-interp</code>, searches a page the way you'd look up a word in a dictionary (row 1,209 on a page of rows 1,101–1,250 is probably about 70% of the way in), rather than always halving. It was faster on the Xeon, but it failed one of SQLite's own tests: on a deliberately corrupted page with duplicate row ids, it found a different duplicate than stock SQLite does. Valid databases are unaffected, but "identical to stock" is the bar, so it was removed too. The one that ships, <code>pcache1-maxkey</code>, is a 12-line bookkeeping fix: after certain B-tree changes, a commit no longer scans the whole of SQLite's page cache. Other ideas didn't survive either: putting SIMD <em>inside</em> SQLite's page search lost on the Xeon, so it was dropped.</p>
 
+  <p>The fourth was borrowed. Another entry in the contest (pull request #154) spotted the same page-cache scan that <code>pcache1-maxkey</code> fixes, and fixed it from the other end with a clever one-line change to SQLite's page balancing: a different temporary page number. It was just as fast, and it passed the team's own checks on the contest database. SQLite's own test suite failed it, though: in one savepoint test, on databases using a feature called incremental auto-vacuum, the temporary page could be one SQLite was still holding, and that page's contents got thrown away. The contest database doesn't use auto-vacuum, so it never bites there. But the team kept its own patch, which passes everything, and credits #154 for the diagnosis in its submission. The lesson they wrote down: a test only proves things for the situations it actually exercises.</p>
+
   <h3>Saving writes: one disk write per commit</h3>
   <p>SQLite in "WAL" mode appends each changed page to a log file. It writes each page as two pieces, a 24-byte header and then the 4 KB page, so a commit that touches 10 pages makes 20 separate write calls. The server slips a thin layer between SQLite and the disk that holds the pieces in memory and sends the whole commit as <strong>one write</strong>. It knows the commit is complete because SQLite marks the last frame's header.</p>
 </div>
@@ -571,7 +575,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <div class="code">
     <div class="src"><span>explore/db/engine.c</span><span>the end of the shim's write function</span></div>
-<pre><code class="language-c">  memcpy(c-&gt;buf + c-&gt;n, b, (size_t)n); c-&gt;n += (size_t)n;     // just remember the bytes
+<pre><code class="language-c">  if (n == 24 &amp;&amp; o != c-&gt;next) {                               // a header rewritten in place at commit:
+    ...  flush what's buffered, then write this header straight through  ...  // (the fix, see below)
+  }
+  ...
+  memcpy(c-&gt;buf + c-&gt;n, b, (size_t)n); c-&gt;n += (size_t)n;     // just remember the bytes
   if (n == 24) {                                                 // a 24-byte frame header:
     const u8 *h = b;                                             //   non-zero "db size" = commit frame
     c-&gt;commit_hdr = (h[4] | h[5] | h[6] | h[7]) != 0;
@@ -581,23 +589,25 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   return SQLITE_OK;</code></pre>
   </div>
 
+  <p>SQLite's own test suite found a real bug here, and it's the kind the contest's durability rule exists for. Occasionally SQLite goes back and rewrites a few log headers in place just before a commit finishes (when a big transaction had to write a page out early and then changed it again). The shim held on to the last of those rewrites, the one carrying the commit's final checksum, and the commit returned with it still in memory. A crash at that moment would have lost a write the server had already confirmed. A crash test reproduced it (39 of 40 such commits lost). Now any header rewrite goes straight to disk, and a guard after every commit flushes anything left over and fails the batch if that flush fails. The same test now loses none. The contest's own checks never trigger this path, which is exactly why the team ran SQLite's.</p>
+
   <h3>The checkpoint write gate</h3>
   <p>The log file can't grow forever. Every so often SQLite copies the logged pages back into the main database file, a <strong>checkpoint</strong>, and then waits for the disk to confirm. On the test box that wait takes 130–270 ms, and if it happens in the middle of serving, every request in line waits too. That spike was the single biggest threat to the "99% under 1 second" rule.</p>
   <p>The fix moves the checkpoint off the request path and adds a <strong>gate</strong>. When the log reaches its high mark, the server keeps answering reads but leaves new writes waiting, unread, in the network buffers until the checkpoint catches up (typically tens of milliseconds). Then they're processed normally.</p>
-  <p>The first version ran SQLite's own checkpoint on a second thread. The shipped "max" build goes further, and it's probably the most cursed thing in the project: it <strong>re-implements SQLite's checkpoint step itself</strong>, as a little state machine on the same io_uring rings that serve the network. It takes the same steps in the same order as SQLite (sync the log, copy each page's latest version into the database file, sync the database, mark the log as copied) and produces the same file. Only the waiting changes: the disk work goes out as io_uring operations between batches instead of blocking calls. It's tested byte-identical against SQLite's own checkpoint, and about 28,000 simulated crashes and power cuts all recovered cleanly. On the Xeon it costs the same CPU and memory as the thread, but bounds the worst write hold better: 14–23 ms against 43–150 ms (experiments 50 and 51).</p>
+  <p>The first version ran SQLite's own checkpoint on a second thread. The "max" build goes further (for now: a final head-to-head against the thread decides which ships), and it's probably the most cursed thing in the project: it <strong>re-implements SQLite's checkpoint step itself</strong>, as a little state machine on the same io_uring rings that serve the network. It takes the same steps in the same order as SQLite (sync the log, copy each page's latest version into the database file, sync the database, mark the log as copied) and produces the same file. Only the waiting changes: the disk work goes out as io_uring operations between batches instead of blocking calls. It's tested byte-identical against SQLite's own checkpoint, and about 28,000 simulated crashes and power cuts all recovered cleanly. On the Xeon it costs the same CPU and memory as the thread, but bounds the worst write hold better: 14–23 ms against 43–150 ms (experiments 50 and 51).</p>
 </div>
 <figure class="wide">
   <div class="fig">
-    <svg viewBox="0 0 960 220" role="img" aria-label="Timeline: reads are served continuously; when the log reaches its high mark, writes are held for about 55 milliseconds while the background checkpoint drains, then released.">
+    <svg viewBox="0 0 960 220" role="img" aria-label="Timeline: reads are served continuously; when the log reaches its high mark, writes are held for tens of milliseconds while the checkpoint drains, then released.">
       <text x="20" y="26" class="ttl">Timeline around one checkpoint</text>
       <text x="20" y="66" class="small">reads</text>
       <rect x="110" y="50" width="830" height="24" rx="4" class="box-a"/><text x="525" y="67" text-anchor="middle" class="small ta">served the whole time</text>
       <text x="20" y="112" class="small">writes</text>
       <rect x="110" y="96" width="420" height="24" rx="4" class="box-a"/>
-      <rect x="530" y="96" width="120" height="24" rx="4" class="box-h"/><text x="590" y="113" text-anchor="middle" class="small th">held ~55 ms</text>
+      <rect x="530" y="96" width="120" height="24" rx="4" class="box-h"/><text x="590" y="113" text-anchor="middle" class="small th">held tens of ms</text>
       <rect x="650" y="96" width="290" height="24" rx="4" class="box-a"/>
       <text x="20" y="158" class="small">checkpoint</text>
-      <rect x="330" y="142" width="320" height="24" rx="4" class="box"/><text x="490" y="159" text-anchor="middle" class="small mu">background thread copies log → database</text>
+      <rect x="330" y="142" width="320" height="24" rx="4" class="box"/><text x="490" y="159" text-anchor="middle" class="small mu">checkpoint copies log → database</text>
       <line x1="530" y1="40" x2="530" y2="180" class="ln dash"/><text x="530" y="200" text-anchor="middle" class="mu small">log hits high mark</text>
       <line x1="650" y1="40" x2="650" y2="180" class="ln dash"/><text x="650" y="200" text-anchor="middle" class="mu small">caught up: gate opens</text>
     </svg>
@@ -710,7 +720,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <text x="470" y="226" text-anchor="middle" class="mu small">result.zip with outputs, box snapshots before and after, CPU and memory counters</text>
     </svg>
   </div>
-  <figcaption>Each experiment runs as an unprivileged user under the same limits the organizer uses, with a hard 3-minute budget that includes compiling. No kernel tuning is allowed, so the box stays like the scored one. 40 experiments had run by the time this page was last updated.</figcaption>
+  <figcaption>Each experiment runs as an unprivileged user under the same limits the organizer uses, with a hard 3-minute budget that includes compiling. No kernel tuning is allowed, so the box stays like the scored one. 53 experiments had run by the time this page was last updated.</figcaption>
 </figure>
 <div class="col">
   <div class="code">
@@ -767,6 +777,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36 via the contest's own test script; again for the max, lawful and boring builds (44–46)</span></td></tr>
       <tr><td>CPU per request: cursed vs. boring build</td><td class="num">34 vs 44 µs</td><td>Xeon<span class="hw">experiments 44–46, 10,000 users at contest load, loopback; lawful 41 µs</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
+      <tr><td>Commits lost in a crash test of the write path</td><td class="num">0 of 40</td><td>Linux, Docker<span class="hw">before the fix SQLite's own tests found: 39 of 40</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
       <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">3.8 ms</td><td>Xeon<span class="hw">experiment 39, 56% busy (15.8 ms at 92%, exp. 40; inline: ~99 ms)</span></td></tr>
       <tr><td>Cached log (WAL) memory</td><td class="num">15–18 MB</td><td>Xeon<span class="hw">experiments 39–40 (was ~256 MB)</span></td></tr>
@@ -780,7 +791,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </div>
 <div class="col">
   <p>The local arena runs the organizer's load generator against each server, boxed into one CPU and 2 GB on a laptop. At the contest's real load, both servers pass at <strong>300,000 users</strong>. Ours does it with the slowest 1% of requests under 7 ms against the leader's 121 ms, and about 12–15 µs of CPU per request against the leader's 21–23 µs on that rig. Ours tops out around <strong>325,000</strong>: solid at 300,000 and marginal at 350,000, while the leader already fails at 325,000. That's local arm64 with 1-minute holds, not an organizer score. At this load CPU ran out before memory for both servers. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
-  <div class="plain"><b>Not yet known</b>The actual score. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The five-minute hold, then the organizer's own run, decide it. Until then, the claims stop at the table above.</div>
+  <div class="plain"><b>Not yet known</b>The code is finished. The last few settings, how eagerly to hang up on idle users and whether checkpoints run on io_uring or on a thread, are being picked by head-to-head runs in the arena, and the frozen build then gets the final runs. The actual score is still unknown. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The five-minute hold, then the organizer's own run, decide it. Until then, the claims stop at the table above.</div>
 </div>
 </section>
 
