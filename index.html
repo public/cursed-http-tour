@@ -32,7 +32,7 @@
 * { box-sizing: border-box; }
 body { background: var(--bg); color: var(--ink); font: 17px/1.62 var(--f-body);
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
-main { max-width: 1000px; margin: 0 auto; padding-block: 40px 80px; display: grid; gap: 0; }
+main { max-width: 1000px; margin: 0 auto; padding-block: 40px 80px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
 .col { max-width: 68ch; width: 100%; margin: 0 auto; }
 h1, h2 { font-family: var(--f-display); font-weight: 700; line-height: 1.15; text-wrap: balance; letter-spacing: -0.01em; }
 h1 { font-size: clamp(2.1rem, 6vw, 3.6rem); margin: 0 0 18px; }
@@ -259,6 +259,7 @@ html { scroll-behavior: smooth; }
     <li><a href="#db"><span>STAGE 4</span>Database surgery</a></li>
     <li><a href="#reply"><span>STAGE 5</span>Reply and the memory wall</a></li>
     <li><a href="#broker"><span>BEHIND THE SCENES</span>The Xeon broker</a></li>
+    <li><a href="#knobs"><span>EXTRA</span>Every trick's off switch</a></li>
   </ol>
 </nav>
 
@@ -318,7 +319,7 @@ html { scroll-behavior: smooth; }
     else r-&gt;singles++;
 }</code></pre>
   </div>
-  <p>Receiving uses the same idea. One "multishot" receive per connection stays armed, so the kernel keeps dropping each new request into a shared pool of buffers without being asked again. The server keeps 256 accepts in flight because, on this kernel version, the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
+  <p>Receiving is tuned for memory, not just speed. Most connections sit idle most of the time, so each idle one holds only a cheap standing "tell me when data arrives" ticket (a multishot <em>poll</em>). It doesn't hold a parked receive, which on this kernel costs about 190 extra bytes per connection; on newer kernels it's 608. When data shows up, a single receive pulls it into a shared pool of buffers. The server also keeps 256 accepts in flight, because on this kernel version the fancier "accept forever" mode stalls under a flood of new connections. Lessons like that came from reading rival entries.</p>
 </div>
 </section>
 
@@ -599,7 +600,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <line x1="650" y1="40" x2="650" y2="180" class="ln dash"/><text x="650" y="200" text-anchor="middle" class="mu small">caught up: gate opens</text>
     </svg>
   </div>
-  <figcaption>On the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17).</figcaption>
+  <figcaption>On the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17). The shipped version keeps the slowest 1% at 2.7 ms with the CPU 55% busy and 10.2 ms at 90% busy (experiment 35).</figcaption>
 </figure>
 <div class="col">
   <div class="code">
@@ -616,6 +617,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   return 1;                                             // keep holding writes
 }</code></pre>
   </div>
+  <p>The checkpoint also had a memory cost. The kernel kept the whole log file cached in memory (up to ~256 MB), and that's memory the connections need. The final version checkpoints in smaller passes and tells the kernel to forget each log page once it has been copied back (<code>posix_fadvise</code>). That cut the log's cached memory to <strong>under 20 MB</strong> on the Xeon (experiment 35).</p>
   <p>One more batch-level trick is allowed outright by the rules: <strong>group commit</strong>. All of a batch's writes share one transaction and one commit, and every reply in the batch waits for it.</p>
 </div>
 </section>
@@ -657,6 +659,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
     return 0;
 }</code></pre>
   </div>
+  <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. Below the normal shedding policy there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and sets its cap from that.</p>
 </div>
 </section>
@@ -703,7 +706,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <text x="470" y="226" text-anchor="middle" class="mu small">result.zip with outputs, box snapshots before and after, CPU and memory counters</text>
     </svg>
   </div>
-  <figcaption>Each experiment runs as an unprivileged user under the same limits the organizer uses, with a hard 3-minute budget that includes compiling. No kernel tuning is allowed, so the box stays like the scored one. 37 experiments had run by the time this page was written.</figcaption>
+  <figcaption>Each experiment runs as an unprivileged user under the same limits the organizer uses, with a hard 3-minute budget that includes compiling. No kernel tuning is allowed, so the box stays like the scored one. 40 experiments had run by the time this page was last updated.</figcaption>
 </figure>
 <div class="col">
   <div class="code">
@@ -714,6 +717,32 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
  "timeout_s": 180, "needs_root": false}</code></pre>
   </div>
   <p>The broker also ran known entries, a C++ server and the previous contest leader (written in Rust), on the same boxes as rulers. That's how the team knows how its numbers relate to the organizer's machine. Under the same load, this server used <strong>32.2 µs</strong> of CPU per request against the leader's <strong>37.6 µs</strong>.</p>
+</div>
+</section>
+
+<!-- ============================================================ KNOBS -->
+<section id="knobs">
+<div class="col">
+  <p class="eyebrow">Every trick has an off switch</p>
+  <h2>How cursed would you like it?</h2>
+  <p>Each unusual thing the server does can be switched off when it's built, one knob at a time, or all at once with <code>CURSED=boring</code>. The boring build is by-the-book: stock SQLite, ordinary SQL queries, SQLite's own file layer and checkpoints, plain one-at-a-time login checks, and the standard picohttpparser for every request. Both builds pass the contest's 42 checks, so you can measure exactly what each trick buys.</p>
+</div>
+<div class="col tbl">
+  <table>
+    <thead><tr><th>Knob</th><th>Cursed (submitted)</th><th>Boring</th></tr></thead>
+    <tbody>
+      <tr><td><code>SQLITE_PATCHES</code></td><td>the three B-tree and cache patches</td><td>stock SQLite 3.54.1</td></tr>
+      <tr><td><code>DB_READS</code></td><td>direct B-tree cursor reads</td><td>the spec's SQL queries</td></tr>
+      <tr><td><code>DB_VFS</code></td><td>one-write-per-commit file layer</td><td>SQLite's own</td></tr>
+      <tr><td><code>DB_CKPT</code></td><td>background checkpoint thread + write gate</td><td>SQLite's autocheckpoint</td></tr>
+      <tr><td><code>DB_WAL_DROP</code></td><td>forget copied log pages</td><td>keep them cached</td></tr>
+      <tr><td><code>JWT</code></td><td>8-lane multi-buffer HMAC</td><td>one token at a time</td></tr>
+      <tr><td><code>PARSER_FAST</code> / <code>PARSER_SLOW</code></td><td>lane-parallel + our SIMD fallback</td><td>picohttpparser only</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="col">
+  <p>The fallback parser is swappable too: our SIMD one, picohttpparser, Node's llhttp, uWebSockets (C++), hparse (Zig) or httparse (Rust). All 24 combinations of fast and fallback parser pass the 42 checks. With every SQLite knob combined, 52 database configurations pass with the database's integrity check clean (Linux, in Docker). The server prints the mode it was built with when it starts.</p>
 </div>
 </section>
 
@@ -731,7 +760,9 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">experiment 36, via the contest's own test script</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
-      <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">2.31 ms</td><td>Xeon<span class="hw">experiment 17 (inline: ~99 ms)</span></td></tr>
+      <tr><td>Slowest 1% of batches during checkpoints</td><td class="num">2.7 ms</td><td>Xeon<span class="hw">experiment 35, 55% busy (10.2 ms at 90%; inline: ~99 ms)</span></td></tr>
+      <tr><td>Cached log (WAL) memory</td><td class="num">≤ 20 MB</td><td>Xeon<span class="hw">experiment 35 (was ~256 MB)</span></td></tr>
+      <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Local 2-minute probes</td><td class="num">100k, 200k pass</td><td>Laptop, Docker<span class="hw">both servers pass; at 300k the test rig itself runs out of ports</span></td></tr>
     </tbody>
@@ -760,7 +791,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </section>
 
 <footer class="col">
-  Built from the cursed-http repository: <code>explore/</code> holds each component's write-up (RESULTS.md) and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked. Numbers are as of 24 October 2026.
+  Built from the cursed-http repository: <code>explore/</code> holds each component's write-up (RESULTS.md) and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked. Numbers are as of 24 October 2026, and the page is updated as the submission gets its final touches.
 </footer>
 </main>
 
