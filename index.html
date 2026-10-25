@@ -799,13 +799,13 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding (now off by default)</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
-      <tr><td>Our highest local pass, contest load</td><td class="num">475,000 users</td><td>Laptop, Docker<span class="hw">the exact build in the PR, 1-minute holds: 2 of 2 runs pass (p99 159–234 ms, 0.29–0.30% errors, all budgeted 503s, 1,955–1,961 MB peak); 450,000 passes 2 of 2 (p99 73–115 ms, 0.19–0.24%); 425,000 (p99 29 ms) and 400,000 (p99 20 ms, 9.3 µs per request) pass with no errors; not an organizer score</span></td></tr>
+      <tr><td>Our highest local pass, contest load</td><td class="num">475,000 users</td><td>Laptop, Docker<span class="hw">the exact build in the PR, 1-minute holds: 2 of 2 runs pass (p99 159–234 ms, 0.29–0.30% errors, all budgeted 503s, 1,955–1,961 MB peak); 450,000 passes 2 of 2 (p99 73–115 ms, 0.19–0.24%); 425,000 (p99 29 ms) and 400,000 (p99 20 ms, 9.3 µs per request) pass with no errors; 500,000 passed 1 of 2 (the other ran out of memory); not an organizer score</span></td></tr>
       <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; passes every step from 300,000 (4 of 4) to 400,000; killed for running out of memory at 425,000</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>ours holds 475,000 users</strong> (two runs out of two) and the previous leader holds 400,000; it's killed for running out of memory at 425,000. At 400,000 ours answers its slowest 1% of requests in 20 ms against the leader's 679 ms, about a thirty-fourth, with about 155 MB less memory and 9.3 µs of CPU per request. Three changes got it there: drain-first receiving, the bounded checkpoint, and 503s with a budget instead of hanging up. That's local arm64 with 1-minute holds, not an organizer score.</p>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>ours holds 475,000 users</strong> (two runs out of two) and the previous leader holds 400,000; it's killed for running out of memory at 425,000. At 400,000 ours answers its slowest 1% of requests in 20 ms against the leader's 679 ms, about a thirty-fourth, with about 155 MB less memory and 9.3 µs of CPU per request. Three changes got it there: drain-first receiving, the bounded checkpoint, and 503s with a budget instead of hanging up. At 500,000 it passed one run of two and ran out of memory in the other: that's the wall. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
   <p>For what happens inside the server at each load level, see <a href="#breaking">how it breaks, step by step</a>.</p>
   <div class="plain"><b>Not yet known</b>The actual score. The load shedding is still being fine-tuned. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
@@ -818,11 +818,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Turning up the crowd</p>
   <h2>How it breaks, step by step</h2>
-  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze, 350,000 and 375,000 from earlier builds, and 400,000 to 475,000 from the exact build in the PR.</p>
+  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze, 350,000 and 375,000 from earlier builds, and 400,000 to 500,000 from the exact build in the PR.</p>
 </div>
 <figure class="wide">
   <div class="fig">
-<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With the shipped build p99 stays between about 4 ms and 440 ms from 200,000 to 475,000 users, all passes. The older band rule failed at 375,000 and 400,000 with 2.1 and 7.2 seconds.">
+<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With the shipped build p99 stays between about 4 ms and 440 ms from 200,000 to 475,000 users, all passes. At 500,000 one run passed with 32 ms and the other ran out of memory, shown at 2.2 seconds. The older band rule failed at 375,000 and 400,000.">
 <line x1="90" y1="300.0" x2="920" y2="300.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="80" y="304.0" text-anchor="end" class="mu small">1 ms</text>
 <line x1="90" y1="235.0" x2="920" y2="235.0" class="ln" style="stroke-opacity:0.35"/>
@@ -836,51 +836,57 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="98" y="99.0" class="th small">contest limit: p99 under 1 s</text>
 <line x1="90.0" y1="300" x2="90.0" y2="306" class="ln"/>
 <text x="90.0" y="322" text-anchor="middle" class="mu small">200k</text>
-<line x1="165.5" y1="300" x2="165.5" y2="306" class="ln"/>
-<line x1="240.9" y1="300" x2="240.9" y2="306" class="ln"/>
-<text x="240.9" y="322" text-anchor="middle" class="mu small">250k</text>
-<line x1="316.4" y1="300" x2="316.4" y2="306" class="ln"/>
-<line x1="391.8" y1="300" x2="391.8" y2="306" class="ln"/>
-<text x="391.8" y="322" text-anchor="middle" class="mu small">300k</text>
-<line x1="467.3" y1="300" x2="467.3" y2="306" class="ln"/>
-<line x1="542.7" y1="300" x2="542.7" y2="306" class="ln"/>
-<text x="542.7" y="322" text-anchor="middle" class="mu small">350k</text>
-<line x1="618.2" y1="300" x2="618.2" y2="306" class="ln"/>
-<line x1="693.6" y1="300" x2="693.6" y2="306" class="ln"/>
-<text x="693.6" y="322" text-anchor="middle" class="mu small">400k</text>
-<line x1="769.1" y1="300" x2="769.1" y2="306" class="ln"/>
-<line x1="844.5" y1="300" x2="844.5" y2="306" class="ln"/>
-<text x="844.5" y="322" text-anchor="middle" class="mu small">450k</text>
+<line x1="159.2" y1="300" x2="159.2" y2="306" class="ln"/>
+<line x1="228.3" y1="300" x2="228.3" y2="306" class="ln"/>
+<text x="228.3" y="322" text-anchor="middle" class="mu small">250k</text>
+<line x1="297.5" y1="300" x2="297.5" y2="306" class="ln"/>
+<line x1="366.7" y1="300" x2="366.7" y2="306" class="ln"/>
+<text x="366.7" y="322" text-anchor="middle" class="mu small">300k</text>
+<line x1="435.8" y1="300" x2="435.8" y2="306" class="ln"/>
+<line x1="505.0" y1="300" x2="505.0" y2="306" class="ln"/>
+<text x="505.0" y="322" text-anchor="middle" class="mu small">350k</text>
+<line x1="574.2" y1="300" x2="574.2" y2="306" class="ln"/>
+<line x1="643.3" y1="300" x2="643.3" y2="306" class="ln"/>
+<text x="643.3" y="322" text-anchor="middle" class="mu small">400k</text>
+<line x1="712.5" y1="300" x2="712.5" y2="306" class="ln"/>
+<line x1="781.7" y1="300" x2="781.7" y2="306" class="ln"/>
+<text x="781.7" y="322" text-anchor="middle" class="mu small">450k</text>
+<line x1="850.8" y1="300" x2="850.8" y2="306" class="ln"/>
 <line x1="920.0" y1="300" x2="920.0" y2="306" class="ln"/>
-<text x="920.0" y="322" text-anchor="middle" class="mu small">475k</text>
+<text x="920.0" y="322" text-anchor="middle" class="mu small">500k</text>
 <text x="505" y="344" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds)</text>
-<path d="M90.0,258.2 L240.9,245.1 L391.8,249.0 L542.7,165.9 L618.2,128.3 L693.6,216.0 L769.1,204.7 L844.5,165.9 L920.0,146.0" class="ln-a"/>
+<path d="M90.0,258.2 L228.3,245.1 L366.7,249.0 L505.0,165.9 L574.2,128.3 L643.3,216.0 L712.5,204.7 L781.7,165.9 L850.8,146.0" class="ln-a"/>
 <circle cx="90.0" cy="258.2" r="5" class="fa"/>
 <text x="100.0" y="248.2" class="small ta">4.4 ms</text>
-<circle cx="240.9" cy="245.1" r="5" class="fa"/>
-<text x="240.9" y="233.1" text-anchor="middle" class="small ta">7.0 ms</text>
-<circle cx="391.8" cy="249.0" r="5" class="fa"/>
-<text x="391.8" y="237.0" text-anchor="middle" class="small ta">6.1 ms</text>
-<circle cx="542.7" cy="165.9" r="5" class="fa"/>
-<text x="542.7" y="153.9" text-anchor="middle" class="small ta">116 ms</text>
-<circle cx="618.2" cy="128.3" r="5" class="fa"/>
-<text x="618.2" y="150.3" text-anchor="middle" class="small ta">438 ms</text>
-<circle cx="693.6" cy="216.0" r="5" class="fa"/>
-<text x="693.6" y="238.0" text-anchor="middle" class="small ta">20 ms</text>
-<circle cx="769.1" cy="204.7" r="5" class="fa"/>
-<text x="769.1" y="192.7" text-anchor="middle" class="small ta">29 ms</text>
-<circle cx="844.5" cy="165.9" r="5" class="fa"/>
-<text x="844.5" y="187.9" text-anchor="middle" class="small ta">116 ms</text>
-<circle cx="920.0" cy="146.0" r="5" class="fa"/>
-<text x="910.0" y="136.0" text-anchor="end" class="small ta">234 ms</text>
-<circle cx="618.2" cy="84.2" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
-<circle cx="693.6" cy="49.4" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
-<path d="M618.2,84.2 L693.6,49.4" class="ln-h dash"/>
-<text x="608.2" y="88.2" text-anchor="end" class="small th">old band rule: 2.1 s</text>
-<text x="703.6" y="53.4" class="small th">7.2 s</text>
+<circle cx="228.3" cy="245.1" r="5" class="fa"/>
+<text x="228.3" y="233.1" text-anchor="middle" class="small ta">7.0 ms</text>
+<circle cx="366.7" cy="249.0" r="5" class="fa"/>
+<text x="366.7" y="237.0" text-anchor="middle" class="small ta">6.1 ms</text>
+<circle cx="505.0" cy="165.9" r="5" class="fa"/>
+<text x="505.0" y="153.9" text-anchor="middle" class="small ta">116 ms</text>
+<circle cx="574.2" cy="128.3" r="5" class="fa"/>
+<text x="574.2" y="150.3" text-anchor="middle" class="small ta">438 ms</text>
+<circle cx="643.3" cy="216.0" r="5" class="fa"/>
+<text x="643.3" y="238.0" text-anchor="middle" class="small ta">20 ms</text>
+<circle cx="712.5" cy="204.7" r="5" class="fa"/>
+<text x="712.5" y="192.7" text-anchor="middle" class="small ta">29 ms</text>
+<circle cx="781.7" cy="165.9" r="5" class="fa"/>
+<text x="781.7" y="187.9" text-anchor="middle" class="small ta">116 ms</text>
+<circle cx="850.8" cy="146.0" r="5" class="fa"/>
+<text x="850.8" y="134.0" text-anchor="middle" class="small ta">234 ms</text>
+<path d="M850.8,146.0 L920.0,82.8" class="ln-h dash"/>
+<circle cx="920.0" cy="202.2" r="5" class="fa"/>
+<text x="910.0" y="206.2" text-anchor="end" class="small ta">32 ms (run 1)</text>
+<circle cx="920.0" cy="82.8" r="5" class="fh"/>
+<text x="910.0" y="72.8" text-anchor="end" class="small th">run 2: out of memory</text>
+<circle cx="574.2" cy="84.2" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
+<circle cx="643.3" cy="49.4" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
+<path d="M574.2,84.2 L643.3,49.4" class="ln-h dash"/>
+<text x="564.2" y="88.2" text-anchor="end" class="small th">old band rule: 2.1 s</text>
+<text x="653.3" y="53.4" class="small th">7.2 s</text>
 </svg>
   </div>
-  <figcaption>The slowest 1% of requests (p99) on a log scale. With the shipped build it stays well under the one-second limit all the way to 475,000 users (the slower of two runs is shown at 450,000 and 475,000). The hollow markers are the older connection-count rule on a test build, failing at 375,000 and 400,000.</figcaption>
+  <figcaption>The slowest 1% of requests (p99) on a log scale. With the shipped build it stays well under the one-second limit all the way to 475,000 users (the slower of two runs is shown at 450,000 and 475,000). At 500,000 one run passed at 32 ms and the other ran out of memory, drawn at its 2.2-second p99: that's the wall. The hollow markers are the older connection-count rule on a test build, failing at 375,000 and 400,000.</figcaption>
 </figure>
 <div class="col">
   <ol class="ladder">
@@ -921,7 +927,15 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <dl>
         <dt>Server</dt><dd>The valve spends its whole burst (20,203–20,460 503s per run) and then serves everything; drain-first's buffers soak up the rest of the backlog. CPU sits around 49–52%.</dd>
         <dt>Kernel and memory</dt><dd>The connections take about 1.77 GB of kernel memory, and the peak was 1,955–1,961 MB: only about 85 MB under the 2 GB limit. With no valve at all, this load ran out of memory.</dd>
-        <dt>Users see</dt><dd>Both runs pass, with p99 159–234 ms and 0.29–0.30% errors. With so little memory left, this is the edge; nothing larger has been run on this build.</dd>
+        <dt>Users see</dt><dd>Both runs pass, with p99 159–234 ms and 0.29–0.30% errors. With so little memory left, this is the edge: the highest level that passes every run.</dd>
+      </dl>
+    </li>
+    <li class="edge">
+      <h4><span>500,000 USERS</span>The wall</h4>
+      <dl>
+        <dt>Server</dt><dd>Half a million connections, each holding a little kernel memory whether or not it has anything to say. One run passed: the valve sent 18,412 503s (0.25%) and p99 was 32 ms. In the other, the valve again spent its burst (the load generator counted about 20,100 503s), and memory ran out anyway.</dd>
+        <dt>Kernel and memory</dt><dd>The connections alone take about 1.86 GB of kernel memory. The passing run peaked at 1,993 MB, about 55 MB under the 2 GB limit, and in the other the container was killed. A valve that sheds a backlog can't fix this, because the memory isn't in a backlog: it's in the connections themselves.</dd>
+        <dt>Users see</dt><dd>One run of two passes; the other fails, with half its requests refused once the server is gone. So 475,000 is the top level that passes reliably, and 500,000 is the wall on this rig.</dd>
       </dl>
     </li>
     <li>
