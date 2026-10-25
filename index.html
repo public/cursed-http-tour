@@ -585,13 +585,13 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>CPU per request by preset</td><td class="num">≈ 30 / 43 / 47 µs</td><td>Xeon<span class="hw">max 29–32 µs over the last three runs; lawful / boring on an earlier commit</span></td></tr>
       <tr><td>SQLite's own test suite with our patch</td><td class="num">same as stock</td><td>Linux<span class="hw">TCL suite (~1M cases) and sqllogictest</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">wall ≈ 340,000 connections on 2 GB</span></td></tr>
-      <tr><td>Highest local pass</td><td class="num">500,000 users</td><td>Local<span class="hw">the exact folder at 34d9354, 2 of 2 runs on a quiet host, p99 151–429 ms, 0.33–0.34% errors; on a busier host it ran out of memory there. Highest error-free pass 450,000</span></td></tr>
+      <tr><td>Highest local pass</td><td class="num">500,000 users</td><td>Local<span class="hw">the exact folder at 34d9354, 2 of 2 runs on a quiet host, p99 151–429 ms, 0.33–0.34% errors; on a busier host it ran out of memory there. 525,000 also passes by the rules, but 7–8.5% of users never connected. Highest error-free pass 450,000</span></td></tr>
       <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Local<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; out of memory at 425,000 (14.4% errors)</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>These local runs are of the exact folder at commit 34d9354; the PR's head differs only in where the parser and JWT code come from, with no change in CPU per request. On the local rig ours holds 500,000 users on a quiet host, and the previous leader holds 400,000. On a busier host (about twice the host CPU load) the same build was killed for running out of memory at 500,000 after a stall of about a second. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
+  <p>These local runs are of the exact folder at commit 34d9354; the PR's head differs only in where the parser and JWT code come from, with no change in CPU per request. On the local rig ours holds 500,000 users on a quiet host, and the previous leader holds 400,000. On a busier host (about twice the host CPU load) the same build was killed for running out of memory at 500,000 after a stall of about a second. At 525,000 both runs pass under the organizer's verdict, but the server holds the same ~487,000 connections as at 500,000 and the other 7–8.5% of users never connect; only their connect timeouts count as errors, so that's a pass by the rules rather than more users served. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
   <div class="plain"><b>Not yet known</b>The actual score. These runs hold each crowd for 60 seconds, not the scored five minutes, on a laptop, not the organizer's machine. On the Xeon each connection costs more kernel memory (the 340,000 wall), so the 503 valve and the accept floor would start working at a smaller crowd, and the laptop's 500,000 isn't guaranteed there. The organizer's own run decides it.</div>
 </div>
 </section>
@@ -605,7 +605,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </div>
 <figure class="wide">
   <div class="fig">
-<svg viewBox="0 0 960 340" role="img" aria-label="p99 and p95 latency against users for the exact folder at 34d9354, log scale: p99 rises from 24 ms at 400,000 users to 429 ms at 500,000, p95 from 7 ms to 20 ms, all under the contest limits.">
+<svg viewBox="0 0 960 340" role="img" aria-label="p99 and p95 latency against users for the exact folder at 34d9354, log scale: p99 rises from 24 ms at 400,000 users to 429 ms at 500,000 and 602 ms at 525,000, p95 from 7 ms to 42 ms, all under the contest limits.">
 <line x1="110" y1="280.0" x2="900" y2="280.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="100" y="284.0" text-anchor="end" class="mu small">1 ms</text>
 <line x1="110" y1="210.0" x2="900" y2="210.0" class="ln" style="stroke-opacity:0.35"/>
@@ -616,36 +616,40 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="100" y="74.0" text-anchor="end" class="mu small">1 s</text>
 <text x="118" y="64.0" class="th small">contest limit: p99 under 1 s</text>
 <line x1="110.0" y1="280" x2="110.0" y2="286" class="ln"/><text x="110.0" y="302" text-anchor="middle" class="mu small">400k</text>
-<line x1="307.5" y1="280" x2="307.5" y2="286" class="ln"/><text x="307.5" y="302" text-anchor="middle" class="mu small">425k</text>
-<line x1="505.0" y1="280" x2="505.0" y2="286" class="ln"/><text x="505.0" y="302" text-anchor="middle" class="mu small">450k</text>
-<line x1="702.5" y1="280" x2="702.5" y2="286" class="ln"/><text x="702.5" y="302" text-anchor="middle" class="mu small">475k</text>
-<line x1="900.0" y1="280" x2="900.0" y2="286" class="ln"/><text x="900.0" y="302" text-anchor="middle" class="mu small">500k</text>
+<line x1="268.0" y1="280" x2="268.0" y2="286" class="ln"/><text x="268.0" y="302" text-anchor="middle" class="mu small">425k</text>
+<line x1="426.0" y1="280" x2="426.0" y2="286" class="ln"/><text x="426.0" y="302" text-anchor="middle" class="mu small">450k</text>
+<line x1="584.0" y1="280" x2="584.0" y2="286" class="ln"/><text x="584.0" y="302" text-anchor="middle" class="mu small">475k</text>
+<line x1="742.0" y1="280" x2="742.0" y2="286" class="ln"/><text x="742.0" y="302" text-anchor="middle" class="mu small">500k</text>
+<line x1="900.0" y1="280" x2="900.0" y2="286" class="ln"/><text x="900.0" y="302" text-anchor="middle" class="mu small">525k</text>
 <text x="505" y="326" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds, folder at 34d9354)</text>
-<path d="M110.0,221.7 L307.5,213.2 L505.0,202.7 L702.5,196.1 L900.0,189.5" class="ln dash"/>
-<path d="M110.0,183.1 L307.5,180.7 L505.0,150.8 L702.5,133.5 L900.0,95.7" class="ln-a"/>
+<path d="M110.0,221.7 L268.0,213.2 L426.0,202.7 L584.0,196.1 L742.0,189.5 L900.0,166.2" class="ln dash"/>
+<path d="M110.0,183.1 L268.0,180.7 L426.0,150.8 L584.0,133.5 L742.0,95.7 L900.0,85.4" class="ln-a"/>
 <circle cx="110.0" cy="183.1" r="5" class="fa"/>
 <text x="120.0" y="173.1" text-anchor="start" class="small ta">24 ms</text>
-<circle cx="307.5" cy="180.7" r="5" class="fa"/>
-<text x="307.5" y="168.7" text-anchor="middle" class="small ta">26 ms</text>
-<circle cx="505.0" cy="150.8" r="5" class="fa"/>
-<text x="505.0" y="130.8" text-anchor="middle" class="small ta">70 ms</text>
-<circle cx="702.5" cy="133.5" r="5" class="fa"/>
-<text x="702.5" y="119.5" text-anchor="middle" class="small ta">117–124 ms</text>
-<circle cx="900.0" cy="95.7" r="5" class="fa"/>
-<text x="888.0" y="83.7" text-anchor="end" class="small ta">151–429 ms</text>
-<circle cx="702.5" cy="135.3" r="4" style="fill:none;stroke:var(--accent);stroke-width:2"/>
-<circle cx="900.0" cy="127.5" r="4" style="fill:none;stroke:var(--accent);stroke-width:2"/>
+<circle cx="268.0" cy="180.7" r="5" class="fa"/>
+<text x="268.0" y="168.7" text-anchor="middle" class="small ta">26 ms</text>
+<circle cx="426.0" cy="150.8" r="5" class="fa"/>
+<text x="426.0" y="130.8" text-anchor="middle" class="small ta">70 ms</text>
+<circle cx="584.0" cy="133.5" r="5" class="fa"/>
+<text x="584.0" y="119.5" text-anchor="middle" class="small ta">117–124 ms</text>
+<circle cx="742.0" cy="95.7" r="5" class="fa"/>
+<text x="742.0" y="81.7" text-anchor="middle" class="small ta">151–429 ms</text>
+<circle cx="900.0" cy="85.4" r="5" class="fa"/>
+<text x="888.0" y="75.4" text-anchor="end" class="small ta">385–602 ms</text>
+<circle cx="584.0" cy="135.3" r="4" style="fill:none;stroke:var(--accent);stroke-width:2"/>
+<circle cx="742.0" cy="127.5" r="4" style="fill:none;stroke:var(--accent);stroke-width:2"/>
+<circle cx="900.0" cy="99.0" r="4" style="fill:none;stroke:var(--accent);stroke-width:2"/>
 <circle cx="110.0" cy="221.7" r="3.5" class="fm"/>
-<circle cx="307.5" cy="213.2" r="3.5" class="fm"/>
-<circle cx="505.0" cy="202.7" r="3.5" class="fm"/>
-<circle cx="702.5" cy="196.1" r="3.5" class="fm"/>
-<circle cx="900.0" cy="189.5" r="3.5" class="fm"/>
+<circle cx="268.0" cy="213.2" r="3.5" class="fm"/>
+<circle cx="426.0" cy="202.7" r="3.5" class="fm"/>
+<circle cx="584.0" cy="196.1" r="3.5" class="fm"/>
+<circle cx="742.0" cy="189.5" r="3.5" class="fm"/>
+<circle cx="900.0" cy="166.2" r="3.5" class="fm"/>
 <text x="120.0" y="239.7" class="small mu">p95: 7 ms</text>
-<text x="890.0" y="219.5" text-anchor="end" class="small mu">p95: 20 ms</text>
-<text x="890.0" y="65.7" text-anchor="end" class="small ta">p99</text>
+<text x="890.0" y="186.2" text-anchor="end" class="small mu">p95: 42 ms</text>
 </svg>
   </div>
-  <figcaption>p99 (solid; filled dots are the slower of two runs, hollow the faster) and p95 (dashed), log scale. Both stay well under the contest limits up to 500,000 users; the 429 ms run came during a CPU spike on the host.</figcaption>
+  <figcaption>p99 (solid; filled dots are the slower of two runs, hollow the faster) and p95 (dashed), log scale. Both stay under the contest limits up to 525,000 users; the 429 ms run at 500,000 came during a CPU spike on the host.</figcaption>
 </figure>
 <div class="col">
   <ol class="ladder">
@@ -687,6 +691,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
         <dt>Server</dt><dd>The valve spends its burst (about 20,300–20,500 fast 503s), and once free memory falls below 200 MB the server stops accepting, so the remaining users wait in the kernel's queue to connect. 9.8–10.1 µs per request, 50–52% busy.</dd>
         <dt>Kernel and memory</dt><dd>About 1.8 GB for the connections alone. Peaks of 2,008 and 2,048 MB: the second touched the 2 GB limit, the kernel reclaimed cached file pages, and nothing was killed.</dd>
         <dt>Users see</dt><dd>Both runs pass: p99 151 and 429 ms, 0.33–0.34% errors (fast 503s plus about 4,100–4,400 connection attempts that timed out). At the end of the hold, 8,203 and 13,669 users (1.6–2.7%) were still waiting to get in. That's on a quiet host: on a busier one (about twice the host CPU load) the same build stalled for about a second and was killed for running out of memory. It holds, with no room to spare.</dd>
+      </dl>
+    </li>
+    <li>
+      <h4><span>525,000 USERS</span>A pass by the rules, not more users served</h4>
+      <dl>
+        <dt>Server</dt><dd>The same ~487,000 open connections as at 500,000: that's where the accept floor stops accepting, because the kernel's per-connection memory leaves no more room. The valve spends its burst again (about 20,500–22,500 fast 503s). 10.7–11.1 µs per request, 52–59% busy.</dd>
+        <dt>Kernel and memory</dt><dd>About 1.8 GB for the connections, as at 500,000. Peaks of 1,952 and 2,054 MB, with nothing killed.</dd>
+        <dt>Users see</dt><dd>Both runs pass under the organizer's verdict: p99 385 and 602 ms, 0.65–0.67% errors. But 38,000–45,000 users (7–8.5%) never got a connection at all. The load generator counts only their connect timeouts (about 0.4%) as errors, so the run still passes. That's why 500,000, where nearly everyone is connected, stays the headline.</dd>
       </dl>
     </li>
   </ol>
