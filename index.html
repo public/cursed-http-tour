@@ -575,7 +575,13 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">So, does it work?</p>
   <h2>What's measured, and what isn't yet</h2>
-  <p>Every number on this page names where it was measured. "Xeon" means rented boxes matching the contest machine, with the load generated on the same box, so the latencies aren't the organizer's. "Local" means the organizer's load generator against the server boxed into one CPU, 2 GB and no swap in Docker on an arm64 laptop, at the contest's load, holding each crowd for one minute.</p>
+  <p>Every number on this page names where it was measured. "Xeon" means rented boxes matching the contest machine, with the load generated on the same box, so the latencies aren't the organizer's. "Local" means the load tests, which all ran on one machine:</p>
+  <ul>
+    <li><strong>The host:</strong> an Apple M5 Pro laptop (18 cores, 48 GB) running macOS 27, with Docker Desktop's arm64 Linux virtual machine (kernel 7.0.14-linuxkit).</li>
+    <li><strong>The server:</strong> one container pinned to a single core, with 2 GB of memory, no swap, and the contest's 65,535 open-file limit. The previous leader ran under the same limits.</li>
+    <li><strong>The crowd:</strong> the organizer's load generator, mload, on 7 other cores, talking to the server over loopback at the contest's load. Each crowd is held for one minute and judged by mload's own pass/fail verdict.</li>
+    <li><strong>The Xeon</strong> (1 vCPU Xeon Platinum 8260, 2 GB, kernel 6.8.0-117) was used for the build, the 42 checks and CPU per request at 10,000 users, not for these crowd sizes.</li>
+  </ul>
 </div>
 <div class="col tbl">
   <table>
@@ -592,7 +598,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </div>
 <div class="col">
   <p>These local runs are of the exact folder at commit 34d9354; the PR's head differs only in where the parser and JWT code come from, with no change in CPU per request. On the local rig ours holds 500,000 users on a quiet host, and the previous leader holds 400,000. On a busier host (about twice the host CPU load) the same build was killed for running out of memory at 500,000 after a stall of about a second. At 525,000 both runs pass under the organizer's verdict, but the server holds the same ~487,000 connections as at 500,000 and the other 7–8.5% of users never connect; only their connect timeouts count as errors, so that's a pass by the rules rather than more users served. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
-  <div class="plain"><b>Not yet known</b>The actual score. These runs hold each crowd for 60 seconds, not the scored five minutes, on a laptop, not the organizer's machine. On the Xeon each connection costs more kernel memory (the 340,000 wall), so the 503 valve and the accept floor would start working at a smaller crowd, and the laptop's 500,000 isn't guaranteed there. The organizer's own run decides it.</div>
+  <div class="plain"><b>Not yet known</b>The actual score. These runs hold each crowd for 60 seconds, not the scored five minutes, on a laptop, not the organizer's machine. Expect lower numbers on the real box: its core is slower than the laptop's, and its kernel spends about 4.3 KB per open connection against about 3.7 KB on the laptop, so it fits roughly 420,000 open connections instead of ~487,000. The 503 valve and the accept floor would start working at a smaller crowd, and the laptop's 500,000 isn't guaranteed there. What this rig does measure is the ordering against the previous leader. The organizer's own run decides it.</div>
 </div>
 </section>
 
@@ -601,7 +607,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Turning up the crowd</p>
   <h2>How it holds, step by step</h2>
-  <p>What happens inside the server as the crowd grows, from the exact folder at commit 34d9354 on the local rig (arm64, 1-minute holds, the contest's load).</p>
+  <p>What happens inside the server as the crowd grows, from the exact folder at commit 34d9354 on the local rig (the M5 Pro laptop's arm64 Docker VM, one pinned core, 1-minute holds, the contest's load).</p>
 </div>
 <figure class="wide">
   <div class="fig">
