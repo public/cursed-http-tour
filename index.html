@@ -157,7 +157,7 @@ html { scroll-behavior: smooth; }
     <p class="eyebrow">cursed-http · a guided tour</p>
     <h1>Serving a crowd from a $12 computer by doing everything the hard way</h1>
     <p class="lede">A walkthrough, for curious non-experts, of a web server built for a speed contest. It uses every trick its authors could justify, and a few they mostly built because they could.</p>
-    <p class="lede" style="font-size:1rem">The entry itself: <a href="https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/158">pull request #158</a> on the challenge repo. This page describes the build at its head, commit 2b66022.</p>
+    <p class="lede" style="font-size:1rem">The entry itself: <a href="https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/158">pull request #158</a> on the challenge repo. This page describes the build at its head, commit d57e27a.</p>
     <div class="specs" aria-label="The machine">
       <div><b>1 CPU core</b>Intel Xeon Platinum 8260</div>
       <div><b>2 GB</b>of memory, no swap</div>
@@ -587,7 +587,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">at the PR's head 2b66022, then 10,000 users with 0 errors, p99 4.1 ms, 32 µs per request, valve and floors idle</span></td></tr>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">at the PR's head d57e27a, then 10,000 users with 0 errors, p99 4.1 ms, 30 µs per request, valve and floors idle</span></td></tr>
+      <tr><td>HTTP/1.1 conformance probe (the challenge's issue #131)</td><td class="num">46 / 46</td><td>PR build<span class="hw">generic profile, all five endpoints: chunked bodies decoded (bad framing or other codings get 400/501 and a close), <code>Connection: close</code> honoured on every path, HTTP/1.0 answered and closed, pipelining works</span></td></tr>
       <tr><td>CPU per request by preset</td><td class="num">≈ 30 / 43 / 47 µs</td><td>Xeon<span class="hw">max 29–32 µs over the last three runs; lawful / boring on an earlier commit</span></td></tr>
       <tr><td>SQLite's own test suite with our patch</td><td class="num">same as stock</td><td>Linux<span class="hw">TCL suite (~1M cases) and sqllogictest</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">wall ≈ 340,000 connections on 2 GB</span></td></tr>
@@ -597,7 +598,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </table>
 </div>
 <div class="col">
-  <p>These local runs are of the exact folder at commit 34d9354; the PR's head differs only in where the parser and JWT code come from, with no change in CPU per request. On the local rig ours holds <strong>475,000 users in every run</strong> (500,000 on a quiet host), and the previous leader holds 400,000. A profile of a failing 500,000 run shows why. With memory nearly full, the kernel slows down the server's own writes to the database log, because it paces disk writes by how much free memory is left. The event loop does those writes itself, so it sleeps for 30–50 ms at a time for about half a second while requests pile up, and a second slow second runs the box out of memory. A busier host makes the disk writes slower still, which is why it depends on the host: on a busier host this evening, 500,000 passed in only 1 of 9 runs across both commits. Moving those writes off the event loop is the next fix being tested. At 525,000 both runs pass under the organizer's verdict, but the server holds the same ~487,000 connections as at 500,000 and the other 7–8.5% of users never connect; only their connect timeouts count as errors, so that's a pass by the rules rather than more users served. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
+  <p>These local runs are of the exact folder at commit 34d9354; the PR's head differs only in where the parser and JWT code come from and in HTTP/1.1 edge cases the load generator never sends, with no change in CPU per request. On the local rig ours holds <strong>475,000 users in every run</strong> (500,000 on a quiet host), and the previous leader holds 400,000. A profile of a failing 500,000 run shows why. With memory nearly full, the kernel slows down the server's own writes to the database log, because it paces disk writes by how much free memory is left. The event loop does those writes itself, so it sleeps for 30–50 ms at a time for about half a second while requests pile up, and a second slow second runs the box out of memory. A busier host makes the disk writes slower still, which is why it depends on the host: on a busier host this evening, 500,000 passed in only 1 of 9 runs across both commits. Moving those writes off the event loop is the next fix being tested. At 525,000 both runs pass under the organizer's verdict, but the server holds the same ~487,000 connections as at 500,000 and the other 7–8.5% of users never connect; only their connect timeouts count as errors, so that's a pass by the rules rather than more users served. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
   <div class="plain"><b>Not yet known</b>The actual score. These runs hold each crowd for 60 seconds, not the scored five minutes, on a laptop, not the organizer's machine. Expect lower numbers on the real box: its core is slower than the laptop's, and its kernel spends about 4.3 KB per open connection against about 3.7 KB on the laptop, so it fits roughly 420,000 open connections instead of ~487,000. The 503 valve and the accept floor would start working at a smaller crowd, and the laptop's 500,000 isn't guaranteed there. What this rig does measure is the ordering against the previous leader. The organizer's own run decides it.</div>
 </div>
 </section>
@@ -744,7 +745,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </section>
 
 <footer class="col">
-  Built from the cursed-http repository at PR #158's head 2b66022 (load-test rows from commit 34d9354): <code>explore/</code> holds each component's write-up and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked.
+  Built from the cursed-http repository at PR #158's head d57e27a (load-test rows from commit 34d9354): <code>explore/</code> holds each component's write-up and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked.
 </footer>
 </main>
 
