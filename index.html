@@ -157,7 +157,7 @@ html { scroll-behavior: smooth; }
     <p class="eyebrow">cursed-http · a guided tour</p>
     <h1>Serving a crowd from a $12 computer by doing everything the hard way</h1>
     <p class="lede">A walkthrough, for curious non-experts, of a web server built for a speed contest. It uses every trick its authors could justify, and a few they mostly built because they could.</p>
-    <p class="lede" style="font-size:1rem">The entry itself: <a href="https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/158">pull request #158</a> on the challenge repo. This page describes the build at its commit 34d9354.</p>
+    <p class="lede" style="font-size:1rem">The entry itself: <a href="https://github.com/arjaythedev/twelve-dollar-server-challenge/pull/158">pull request #158</a> on the challenge repo. This page describes the build at its head, commit 2b66022.</p>
     <div class="specs" aria-label="The machine">
       <div><b>1 CPU core</b>Intel Xeon Platinum 8260</div>
       <div><b>2 GB</b>of memory, no swap</div>
@@ -336,7 +336,7 @@ Authorization: Bearer eyJhbGciOi</textarea>
   return fp_mm2(_mm256_cmpeq_epi8(v0, LF), _mm256_cmpeq_epi8(v1, LF));   // 64 compares -&gt; 64 bits
 }</code></pre>
   </div>
-  <p>The parser isn't hand-written: a script <strong>generates it from the API's own specification</strong>, so it knows the handful of request shapes this API can receive and recognises each from its first few bytes. Anything unusual falls back to a general parser that is SIMD too and gives identical answers to the well-known <code>picohttpparser</code> on every input tested. Result on the Xeon: <strong>37 nanoseconds</strong> per request, against 107 for picohttpparser with the same routing on top.</p>
+  <p>The parser isn't hand-written: a script <strong>generates it from the API's own specification</strong>, so it knows the handful of request shapes this API can receive and recognises each from its first few bytes. Anything unusual falls back to a general parser that is SIMD too and gives identical answers to the well-known <code>picohttpparser</code> on every input tested. Result on the Xeon: <strong>37 nanoseconds</strong> per request, against 107 for picohttpparser with the same routing on top. The parser now lives in its own MIT-licensed library, cursed-http-parser, which the server vendors at a pinned commit that its build script checks.</p>
 
   <h3>The really cursed bit: parsing different people's requests side by side</h3>
   <p>Each request is short, but a batch holds dozens of them from different users. So the "lane-parallel" parser turns the problem sideways: it puts one request from each of 4 or 8 connections into the lanes of a single register, and parses them all with the same instructions.</p>
@@ -418,7 +418,7 @@ bp_parse(n, buf, len, out, ret);    // ret[i] = fast_parse(buf[i], len[i], &amp;
         h = VADD(t1, t2);                                                        \
     } while (0)</code></pre>
   </div>
-  <p>This Xeon slows its clock when code leans on the full 512-bit registers, so the shipped version uses AVX-512's new instructions on 256-bit registers. On the Xeon, with a typical batch of three tokens: <strong>608 ns per token</strong>, against 6,201 ns for the C++ library jwt-cpp and 8,739 ns for Go's golang-jwt.</p>
+  <p>This Xeon slows its clock when code leans on the full 512-bit registers, so the shipped version uses AVX-512's new instructions on 256-bit registers. The verifier is its own MIT library too, cursed-jwt, and it picks the fastest version the CPU supports when the server starts: on the Xeon that's the AVX-512 one. On the Xeon, with a typical batch of three tokens: <strong>608 ns per token</strong>, against 6,201 ns for the C++ library jwt-cpp and 8,739 ns for Go's golang-jwt.</p>
 </div>
 </section>
 
@@ -581,17 +581,17 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">at commit 34d9354, then 10,000 users with 0 errors, p99 4.1 ms, 32 µs per request, valve and floors idle</span></td></tr>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">at the PR's head 2b66022, then 10,000 users with 0 errors, p99 4.1 ms, 32 µs per request, valve and floors idle</span></td></tr>
       <tr><td>CPU per request by preset</td><td class="num">≈ 30 / 43 / 47 µs</td><td>Xeon<span class="hw">max 29–32 µs over the last three runs; lawful / boring on an earlier commit</span></td></tr>
       <tr><td>SQLite's own test suite with our patch</td><td class="num">same as stock</td><td>Linux<span class="hw">TCL suite (~1M cases) and sqllogictest</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">wall ≈ 340,000 connections on 2 GB</span></td></tr>
-      <tr><td>Highest local pass</td><td class="num">500,000 users</td><td>Local<span class="hw">2 of 2 runs, p99 151–429 ms, 0.33–0.34% errors; highest error-free pass 450,000</span></td></tr>
+      <tr><td>Highest local pass</td><td class="num">500,000 users</td><td>Local<span class="hw">the exact folder at 34d9354, 2 of 2 runs on a quiet host, p99 151–429 ms, 0.33–0.34% errors; on a busier host it ran out of memory there. Highest error-free pass 450,000</span></td></tr>
       <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Local<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; out of memory at 425,000 (14.4% errors)</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>On the local rig ours holds 500,000 users and the previous leader holds 400,000. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
+  <p>These local runs are of the exact folder at commit 34d9354; the PR's head differs only in where the parser and JWT code come from, with no change in CPU per request. On the local rig ours holds 500,000 users on a quiet host, and the previous leader holds 400,000. On a busier host (about twice the host CPU load) the same build was killed for running out of memory at 500,000 after a stall of about a second. At 400,000 ours answers its slowest 1% of requests in 24 ms against the leader's 679 ms, about a twenty-eighth, with about 140 MB less memory (1,607 vs 1,749 MB) and 9.4 µs of CPU per request against 17.0. The gap is not all cleverness: given just one of this project's ideas (checkpointing on a background thread, or dropping its 1 GB memory map of the database), the leader held 450,000 on the same rig.</p>
   <div class="plain"><b>Not yet known</b>The actual score. These runs hold each crowd for 60 seconds, not the scored five minutes, on a laptop, not the organizer's machine. On the Xeon each connection costs more kernel memory (the 340,000 wall), so the 503 valve and the accept floor would start working at a smaller crowd, and the laptop's 500,000 isn't guaranteed there. The organizer's own run decides it.</div>
 </div>
 </section>
@@ -601,11 +601,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Turning up the crowd</p>
   <h2>How it holds, step by step</h2>
-  <p>What happens inside the server as the crowd grows, from the exact build in the PR on the local rig (arm64, 1-minute holds, the contest's load).</p>
+  <p>What happens inside the server as the crowd grows, from the exact folder at commit 34d9354 on the local rig (arm64, 1-minute holds, the contest's load).</p>
 </div>
 <figure class="wide">
   <div class="fig">
-<svg viewBox="0 0 960 340" role="img" aria-label="p99 and p95 latency against users for the exact build in the PR, log scale: p99 rises from 24 ms at 400,000 users to 429 ms at 500,000, p95 from 7 ms to 20 ms, all under the contest limits.">
+<svg viewBox="0 0 960 340" role="img" aria-label="p99 and p95 latency against users for the exact folder at 34d9354, log scale: p99 rises from 24 ms at 400,000 users to 429 ms at 500,000, p95 from 7 ms to 20 ms, all under the contest limits.">
 <line x1="110" y1="280.0" x2="900" y2="280.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="100" y="284.0" text-anchor="end" class="mu small">1 ms</text>
 <line x1="110" y1="210.0" x2="900" y2="210.0" class="ln" style="stroke-opacity:0.35"/>
@@ -620,7 +620,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <line x1="505.0" y1="280" x2="505.0" y2="286" class="ln"/><text x="505.0" y="302" text-anchor="middle" class="mu small">450k</text>
 <line x1="702.5" y1="280" x2="702.5" y2="286" class="ln"/><text x="702.5" y="302" text-anchor="middle" class="mu small">475k</text>
 <line x1="900.0" y1="280" x2="900.0" y2="286" class="ln"/><text x="900.0" y="302" text-anchor="middle" class="mu small">500k</text>
-<text x="505" y="326" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds, exact build)</text>
+<text x="505" y="326" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds, folder at 34d9354)</text>
 <path d="M110.0,221.7 L307.5,213.2 L505.0,202.7 L702.5,196.1 L900.0,189.5" class="ln dash"/>
 <path d="M110.0,183.1 L307.5,180.7 L505.0,150.8 L702.5,133.5 L900.0,95.7" class="ln-a"/>
 <circle cx="110.0" cy="183.1" r="5" class="fa"/>
@@ -686,7 +686,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <dl>
         <dt>Server</dt><dd>The valve spends its burst (about 20,300–20,500 fast 503s), and once free memory falls below 200 MB the server stops accepting, so the remaining users wait in the kernel's queue to connect. 9.8–10.1 µs per request, 50–52% busy.</dd>
         <dt>Kernel and memory</dt><dd>About 1.8 GB for the connections alone. Peaks of 2,008 and 2,048 MB: the second touched the 2 GB limit, the kernel reclaimed cached file pages, and nothing was killed.</dd>
-        <dt>Users see</dt><dd>Both runs pass: p99 151 and 429 ms, 0.33–0.34% errors (fast 503s plus about 4,100–4,400 connection attempts that timed out). At the end of the hold, 8,203 and 13,669 users (1.6–2.7%) were still waiting to get in. It holds, with no room to spare.</dd>
+        <dt>Users see</dt><dd>Both runs pass: p99 151 and 429 ms, 0.33–0.34% errors (fast 503s plus about 4,100–4,400 connection attempts that timed out). At the end of the hold, 8,203 and 13,669 users (1.6–2.7%) were still waiting to get in. That's on a quiet host: on a busier one (about twice the host CPU load) the same build stalled for about a second and was killed for running out of memory. It holds, with no room to spare.</dd>
       </dl>
     </li>
   </ol>
@@ -726,7 +726,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </section>
 
 <footer class="col">
-  Built from the cursed-http repository at PR #158's commit 34d9354: <code>explore/</code> holds each component's write-up and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked.
+  Built from the cursed-http repository at PR #158's head 2b66022 (load-test rows from commit 34d9354): <code>explore/</code> holds each component's write-up and <code>synteq-experiments/</code> holds every Xeon run. Code excerpts are lightly trimmed where marked.
 </footer>
 </main>
 
