@@ -605,10 +605,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 
   <p>SQLite's own test suite found a real bug here, and it's the kind the contest's durability rule exists for. Occasionally SQLite goes back and rewrites a few log headers in place just before a commit finishes (when a big transaction had to write a page out early and then changed it again). The shim held on to the last of those rewrites, the one carrying the commit's final checksum, and the commit returned with it still in memory. A crash at that moment would have lost a write the server had already confirmed. A crash test reproduced it (39 of 40 such commits lost). Now any header rewrite goes straight to disk, and a guard after every commit flushes anything left over and fails the batch if that flush fails. The same test now loses none. The contest's own checks never trigger this path, which is exactly why the team ran SQLite's.</p>
 
-  <h3>The checkpoint write gate</h3>
+  <h3>Checkpoints: three designs, and the boring one won</h3>
   <p>The log file can't grow forever. Every so often SQLite copies the logged pages back into the main database file, a <strong>checkpoint</strong>, and then waits for the disk to confirm. On the test box that wait takes 130–270 ms, and if it happens in the middle of serving, every request in line waits too. That spike was the single biggest threat to the "99% under 1 second" rule.</p>
-  <p>The fix moves the checkpoint off the request path and adds a <strong>gate</strong>. When the log reaches its high mark, the server keeps answering reads but leaves new writes waiting, unread, in the network buffers until the checkpoint catches up (typically tens of milliseconds). Then they're processed normally.</p>
-  <p>The first version ran SQLite's own checkpoint on a second thread. The shipped "max" build goes further, and it's probably the most cursed thing in the project: it <strong>re-implements SQLite's checkpoint step itself</strong>, as a little state machine on the same io_uring rings that serve the network. It takes the same steps in the same order as SQLite (sync the log, copy each page's latest version into the database file, sync the database, mark the log as copied) and produces the same file. Only the waiting changes: the disk work goes out as io_uring operations between batches instead of blocking calls. It's tested byte-identical against SQLite's own checkpoint, and about 28,000 simulated crashes and power cuts all recovered cleanly. On the Xeon it costs the same CPU and memory as the thread, but bounds the worst write hold better: 14–23 ms against 43–150 ms (experiments 50 and 51). The "lawful" build uses SQLite's own checkpoint instead, run right after each batch's replies, and the "boring" build leaves it to SQLite's automatic checkpoints.</p>
+  <p>The first fix moved the checkpoint off the request path and added a <strong>gate</strong>: SQLite's own checkpoint ran on a second thread, and when the log reached its high mark the server kept answering reads but left new writes waiting, unread, in the network buffers until the checkpoint caught up (typically tens of milliseconds).</p>
+  <p>The second design is probably the most cursed thing in the project: the team <strong>re-implemented SQLite's checkpoint step itself</strong>, as a little state machine on the same io_uring rings that serve the network. It takes the same steps in the same order as SQLite (sync the log, copy each page's latest version into the database file, sync the database, mark the log as copied) and produces the same file. Only the waiting changes: the disk work goes out as io_uring operations between batches instead of blocking calls. It's tested byte-identical against SQLite's own checkpoint, and about 28,000 simulated crashes and power cuts all recovered cleanly. At moderate load on the Xeon it matched the thread (experiments 50 and 51). It's still in the build, one flag away (<code>DB_CKPT=uring</code>).</p>
+  <p>But the design that ships is the plain one, borrowed from the previous leader. Every 4,096 new log frames, the event loop runs SQLite's own "RESTART" checkpoint right after the batch's replies have been sent, so the log never grows big and is reused in place. There's no gate and no writes are held. In the arena near the limit, the io_uring version could fall behind and stall for 432–861 ms at a time (once 9 seconds). The bounded checkpoint kept the log at about 5,500 frames, its longest pause at 31–103 ms, and it even cost less CPU (9.9 against 12–15 µs per request locally). The "lawful" build uses SQLite's own checkpoint run right after each batch's replies, and the "boring" build leaves it to SQLite's automatic checkpoints.</p>
 </div>
 <figure class="wide">
   <div class="fig">
@@ -626,11 +627,11 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <line x1="650" y1="40" x2="650" y2="180" class="ln dash"/><text x="650" y="200" text-anchor="middle" class="mu small">caught up: gate opens</text>
     </svg>
   </div>
-  <figcaption>On the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17). With the shipped settings the slowest 1% stays at 3.8 ms with the CPU 56% busy and 15.8 ms at 92% busy (experiments 39 and 40).</figcaption>
+  <figcaption>The first design, the gate: on the Xeon, the slowest 1% of batches dropped from about 99 ms with ordinary inline checkpoints to 2.31 ms with the thread and gate (experiment 17). Tuned, it held the slowest 1% at 3.8 ms with the CPU 56% busy and 15.8 ms at 92% (experiments 39 and 40). The shipped build no longer holds writes at all.</figcaption>
 </figure>
 <div class="col">
   <div class="code">
-    <div class="src"><span>explore/db/engine.c</span><span>asked once per batch: should POSTs wait?</span></div>
+    <div class="src"><span>explore/db/engine.c</span><span>the earlier gate design: should POSTs wait?</span></div>
 <pre><code class="language-c">int eng_writes_paused(eng *e) {
   if (!e-&gt;drain) return 0;
   u32 mx, pend; wal_state(e, &amp;mx, &amp;pend);
@@ -643,7 +644,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   return 1;                                             // keep holding writes
 }</code></pre>
   </div>
-  <p>The checkpoint also had a memory cost. The kernel kept the whole log file cached in memory (up to ~256 MB), and that's memory the connections need. The final version checkpoints in smaller passes and tells the kernel to forget each log page once it has been copied back (<code>posix_fadvise</code>). That cut the log's cached memory to <strong>15–18 MB</strong> on the Xeon (experiments 39 and 40). Testing also caught a real bug along the way: under write-heavy load the gate never closed, so the log just kept growing. It's fixed.</p>
+  <p>Checkpoints also had a memory cost. With the gate design the log could grow to about 256 MB, and the kernel kept all of it cached in memory that the connections needed. The team first fixed that by telling the kernel to forget each log page once copied (<code>posix_fadvise</code>), which cut it to 15–18 MB on the Xeon (experiments 39 and 40). The bounded checkpoint makes the problem smaller still, because the log itself stays at about 5,500 frames. Testing also caught a real bug along the way: under write-heavy load the old gate never closed, so the log just kept growing. It was fixed, before the gate was retired.</p>
   <p>One more batch-level trick is allowed outright by the rules: <strong>group commit</strong>. All of a batch's writes share one transaction and one commit, and every reply in the batch waits for it.</p>
 </div>
 </section>
@@ -754,7 +755,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <p class="eyebrow">Every trick has an off switch</p>
   <h2>How cursed would you like it?</h2>
   <p>Each unusual thing the server does can be switched off when it's built, one knob at a time, or all at once with <code>CURSED=boring</code>. The boring build is by-the-book: stock SQLite, ordinary SQL queries, SQLite's own file layer and checkpoints, plain one-at-a-time login checks, and the standard picohttpparser for every request. Both builds pass the contest's 42 checks, so you can measure exactly what each trick buys. A middle setting, <code>CURSED=lawful</code>, uses completely stock SQLite through its public API but keeps every trick outside the database.</p>
-  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the builds used this much CPU per request: <strong>max 34 µs</strong> at the PR's current commit (experiment 122), and <strong>lawful 43 µs, boring 47 µs</strong> at an earlier commit (experiments 66–67; the later changes are all in receiving and load shedding). All three pass the contest's 42 checks on the Xeon. So the curses, taken together, save about a quarter of the CPU per request, and the SQLite curses account for most of that. Most of the gap is the feed: 8.2 µs through SQLite's cursors against 23.2 µs through the spec's SQL (Xeon, experiment 15).</p>
+  <p>On the Xeon, at the contest's real load (10,000 simulated users, loopback), the builds used this much CPU per request: <strong>max 31 µs</strong> at the PR's current commit (experiment 125), and <strong>lawful 43 µs, boring 47 µs</strong> at an earlier commit (experiments 66–67; the later changes don't touch those builds). All three pass the contest's 42 checks on the Xeon. So the curses, taken together, save about a third of the CPU per request, and the SQLite curses account for most of that. Most of the gap is the feed: 8.2 µs through SQLite's cursors against 23.2 µs through the spec's SQL (Xeon, experiment 15).</p>
 </div>
 <div class="col tbl">
   <table>
@@ -763,7 +764,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td><code>SQLITE_PATCHES</code></td><td>one page-cache patch</td><td>stock SQLite 3.54.1</td></tr>
       <tr><td><code>DB_READS</code></td><td>direct B-tree cursor reads</td><td>the spec's SQL queries</td></tr>
       <tr><td><code>DB_VFS</code></td><td>one-write-per-commit file layer</td><td>SQLite's own</td></tr>
-      <tr><td><code>DB_CKPT</code></td><td>our own checkpoint step on io_uring + write gate (or SQLite's checkpoint on a thread)</td><td>SQLite's autocheckpoint</td></tr>
+      <tr><td><code>DB_CKPT</code></td><td>SQLite's RESTART checkpoint every 4,096 log frames on the event loop (our own io_uring checkpoint step is one flag away)</td><td>SQLite's autocheckpoint</td></tr>
       <tr><td><code>DB_WAL_DROP</code></td><td>forget copied log pages</td><td>keep them cached</td></tr>
       <tr><td><code>SQLITE_LINK</code></td><td>our engine compiled into SQLite itself</td><td>SQLite as a separate library, public API only</td></tr>
       <tr><td><code>JWT</code></td><td>8-lane multi-buffer HMAC</td><td>one token at a time</td></tr>
@@ -788,8 +789,8 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   <table>
     <thead><tr><th>What</th><th>Result</th><th>Measured on</th></tr></thead>
     <tbody>
-      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">max at the PR's commit 0429fd3 (experiment 122); lawful and boring at an earlier commit (experiments 66–67)</span></td></tr>
-      <tr><td>CPU per request by build mode</td><td class="num">34 / 43 / 47 µs</td><td>Xeon<span class="hw">max at the PR's commit (experiment 122); lawful / boring at an earlier commit (66–67); 10,000 users at contest load (no gzip), loopback, PGO off</span></td></tr>
+      <tr><td>Contest test suite</td><td class="num">42 / 42</td><td>Xeon<span class="hw">max at the PR's commit 64cbc49 (experiment 125); lawful and boring at an earlier commit (experiments 66–67)</span></td></tr>
+      <tr><td>CPU per request by build mode</td><td class="num">31 / 43 / 47 µs</td><td>Xeon<span class="hw">max at the PR's commit (experiment 125); lawful / boring at an earlier commit (66–67); 10,000 users at contest load (no gzip), loopback, PGO off</span></td></tr>
       <tr><td>CPU per request vs. previous leader</td><td class="num">32.2 vs 37.6 µs</td><td>Xeon<span class="hw">experiments 26 and 29, same load</span></td></tr>
       <tr><td>Commits lost in the engine's crash test of the write path</td><td class="num">0 of 60</td><td>Linux, Docker<span class="hw">engine crash test (test_crash), not a load test; before the fix that SQLite's own tests prompted: 39 of 40 lost</span></td></tr>
       <tr><td>Kernel memory per idle connection</td><td class="num">≈ 4.3 KB</td><td>Xeon<span class="hw">experiment 19 → wall ≈ 340k connections</span></td></tr>
@@ -798,13 +799,13 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
-      <tr><td>Our highest local pass, contest load</td><td class="num">425,000 users</td><td>Laptop, Docker<span class="hw">the PR's build, 1-minute holds: 3 of 3 runs pass, 0 errors (p99 38–264 ms, 1,703–1,860 MB peak); 400,000 passes with p99 5.1 ms and 1,579 MB; 450,000 fails; not an organizer score</span></td></tr>
+      <tr><td>Our highest local pass, contest load</td><td class="num">450,000 users</td><td>Laptop, Docker<span class="hw">the PR's build, 1-minute holds: 3 of 3 runs pass (p99 150–248 ms, 0.34–0.93% errors, all fast 503s, 1,741–1,815 MB peak); 425,000 passes (p99 165 ms, 0 errors); 400,000 passes (p99 23.7 ms, 9.9 µs per request); not an organizer score</span></td></tr>
       <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; passes every step from 300,000 (4 of 4) to 400,000; killed for running out of memory at 425,000</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>ours holds 425,000 users</strong> (three runs out of three, no errors) and the previous leader holds 400,000; it's killed for running out of memory at 425,000. At 400,000 ours answers its slowest 1% of requests in 5.1 ms against the leader's 679 ms, with about 170 MB less memory. Ours fails at 450,000. That's local arm64 with 1-minute holds, not an organizer score.</p>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>ours holds 450,000 users</strong> (three runs out of three) and the previous leader holds 400,000; it's killed for running out of memory at 425,000. At 400,000 ours answers its slowest 1% of requests in 23.7 ms against the leader's 679 ms, with about 150 MB less memory. Two changes got it there: drain-first receiving, and the bounded checkpoint. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
   <p>For what happens inside the server at each load level, see <a href="#breaking">how it breaks, step by step</a>.</p>
   <div class="plain"><b>Not yet known</b>The actual score. The load shedding is still being fine-tuned. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
@@ -821,7 +822,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 </div>
 <figure class="wide">
   <div class="fig">
-<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With the shipped build p99 stays between about 4 ms and 440 ms from 200,000 to 425,000 users, all passes. At 450,000 p99 is 971 ms but the run fails because 1.78% of requests failed. The older band rule failed at 375,000 and 400,000 with 2.1 and 7.2 seconds.">
+<svg viewBox="0 0 960 360" role="img" aria-label="Slowest 1% of requests (p99) against users, log scale. With the shipped build p99 stays between about 4 ms and 440 ms from 200,000 to 450,000 users, all passes. The older band rule failed at 375,000 and 400,000 with 2.1 and 7.2 seconds.">
 <line x1="90" y1="300.0" x2="920" y2="300.0" class="ln" style="stroke-opacity:0.35"/>
 <text x="80" y="304.0" text-anchor="end" class="mu small">1 ms</text>
 <line x1="90" y1="235.0" x2="920" y2="235.0" class="ln" style="stroke-opacity:0.35"/>
@@ -856,7 +857,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <line x1="920.0" y1="300" x2="920.0" y2="306" class="ln"/>
 <text x="920.0" y="322" text-anchor="middle" class="mu small">450k</text>
 <text x="505" y="344" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds)</text>
-<path d="M90.0,258.2 L256.0,245.1 L422.0,249.0 L588.0,165.9 L671.0,128.3 L754.0,254.0 L837.0,142.6 L920.0,105.8" class="ln-a"/>
+<path d="M90.0,258.2 L256.0,245.1 L422.0,249.0 L588.0,165.9 L671.0,128.3 L754.0,210.6 L837.0,155.8 L920.0,144.3" class="ln-a"/>
 <circle cx="90.0" cy="258.2" r="5" class="fa"/>
 <text x="100.0" y="248.2" class="small ta">4.4 ms</text>
 <circle cx="256.0" cy="245.1" r="5" class="fa"/>
@@ -867,12 +868,12 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="588.0" y="153.9" text-anchor="middle" class="small ta">116 ms</text>
 <circle cx="671.0" cy="128.3" r="5" class="fa"/>
 <text x="671.0" y="150.3" text-anchor="middle" class="small ta">438 ms</text>
-<circle cx="754.0" cy="254.0" r="5" class="fa"/>
-<text x="754.0" y="276.0" text-anchor="middle" class="small ta">5.1 ms</text>
-<circle cx="837.0" cy="142.6" r="5" class="fa"/>
-<text x="837.0" y="130.6" text-anchor="middle" class="small ta">264 ms</text>
-<circle cx="920.0" cy="105.8" r="5" class="fh"/>
-<text x="910.0" y="93.8" text-anchor="end" class="small th">971 ms, fails on errors (1.78%)</text>
+<circle cx="754.0" cy="210.6" r="5" class="fa"/>
+<text x="754.0" y="232.6" text-anchor="middle" class="small ta">24 ms</text>
+<circle cx="837.0" cy="155.8" r="5" class="fa"/>
+<text x="837.0" y="143.8" text-anchor="middle" class="small ta">165 ms</text>
+<circle cx="920.0" cy="144.3" r="5" class="fa"/>
+<text x="910.0" y="134.3" text-anchor="end" class="small ta">248 ms</text>
 <circle cx="671.0" cy="84.2" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
 <circle cx="754.0" cy="49.4" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
 <path d="M671.0,84.2 L754.0,49.4" class="ln-h dash"/>
@@ -880,7 +881,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="764.0" y="53.4" class="small th">7.2 s</text>
 </svg>
   </div>
-  <figcaption>The slowest 1% of requests (p99) on a log scale. With the shipped build it stays well under the one-second limit up to 425,000 users (the slowest of three passing runs is shown). At 450,000 p99 is still just under a second, but the server is killed late in the hold and 1.78% of requests fail, so that run fails. The hollow markers are the older connection-count rule on a test build, failing at 375,000 and 400,000.</figcaption>
+  <figcaption>The slowest 1% of requests (p99) on a log scale. With the shipped build it stays well under the one-second limit all the way to 450,000 users (the slowest of three passing runs is shown). 475,000 hasn't been run on this build yet. The hollow markers are the older connection-count rule on a test build, failing at 375,000 and 400,000.</figcaption>
 </figure>
 <div class="col">
   <ol class="ladder">
@@ -896,24 +897,32 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <h4><span>350,000–400,000 USERS</span>Still nothing closed: memory has room</h4>
       <dl>
         <dt>Server</dt><dd>All 400,000 connections stay open, because more than 400 MB of memory is still free and the shedding rule only reacts to memory. Each request costs about 10–13 µs of CPU.</dd>
-        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users and 1,488 MB at 400,000, with 1,579 MB in total at the peak on the PR's build.</dd>
-        <dt>Users see</dt><dd>p99 116 ms at 350,000 and 5.1 ms at 400,000 on the PR's build, no errors: both pass. The older rule, which shed by connection count once open connections reached 95% of a 380,000 cap, started hanging up here. On the same test build it made 3,100–5,100 users a second reconnect, pushed CPU to 84–90%, and failed at both 375,000 (p99 2.1 s) and 400,000 (7.2 s). That's why the memory rule replaced it.</dd>
+        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users and 1,488 MB at 400,000, with 1,598 MB in total at the peak on the PR's build.</dd>
+        <dt>Users see</dt><dd>p99 116 ms at 350,000 and 23.7 ms at 400,000 on the PR's build, no errors: both pass. The older rule, which shed by connection count once open connections reached 95% of a 380,000 cap, started hanging up here. On the same test build it made 3,100–5,100 users a second reconnect, pushed CPU to 84–90%, and failed at both 375,000 (p99 2.1 s) and 400,000 (7.2 s). That's why the memory rule replaced it.</dd>
       </dl>
     </li>
     <li>
       <h4><span>425,000 USERS</span>A traffic jam in the kernel, defused</h4>
       <dl>
-        <dt>Server</dt><dd>Near the end of the ramp, a database checkpoint briefly stalls the event loop, and requests keep arriving while it does. Earlier builds left them waiting in the kernel's socket buffers, about 4 KB each, and around 100,000 could pile up: a classic case of <em>bufferbloat</em>, which ran the box out of memory. Drain-first copies them out as they arrive, at about 0.5 KB each, so the stall just becomes a short delay.</dd>
-        <dt>Kernel and memory</dt><dd>Kernel memory for the connections stays at about 1.58 GB, the jam no longer piles up in socket buffers, and peak memory was 1,703–1,860 MB. The socket-pressure valve never needed to fire.</dd>
-        <dt>Users see</dt><dd>Three runs out of three pass with no errors, with p99 between 38 and 264 ms. The previous leader is killed for running out of memory at this size.</dd>
+        <dt>Server</dt><dd>Earlier builds hit a jam here: near the end of the ramp a long database checkpoint stalled the event loop, and around 100,000 requests piled up in the kernel's socket buffers at about 4 KB each until the box ran out of memory (a classic case of <em>bufferbloat</em>). Two changes defused it. Drain-first copies arriving requests out of the kernel at about 0.5 KB each, and the bounded checkpoint keeps every pause short, at most about 100 ms.</dd>
+        <dt>Kernel and memory</dt><dd>Kernel memory for the connections is about 1.58 GB, almost nothing waits in socket buffers, and peak memory was 1,706 MB. CPU sat at about 47%. Nothing was shed and the socket-pressure valve never fired.</dd>
+        <dt>Users see</dt><dd>p99 165 ms with no errors: a pass. The previous leader is killed for running out of memory at this size.</dd>
       </dl>
     </li>
     <li class="edge">
-      <h4><span>450,000 USERS</span>Past the limit</h4>
+      <h4><span>450,000 USERS</span>The valves start working</h4>
       <dl>
-        <dt>Server</dt><dd>Shedding switches on (about 4% of replies say <code>Connection: close</code>) and the valve answers 38,341 requests with a 503, but there are simply too many connections for 2 GB.</dd>
-        <dt>Kernel and memory</dt><dd>The connections alone take about 1.6 GB of kernel memory, and late in the hold the container runs out of memory and is killed.</dd>
-        <dt>Users see</dt><dd>p99 971 ms, just under the limit, but 1.78% of requests fail, over the 1% allowance: a fail.</dd>
+        <dt>Server</dt><dd>Free memory finally runs low enough for shedding to start: about 2–3% of replies say <code>Connection: close</code>. The socket-pressure valve also answers the oldest queued requests with a fast 503: 21,283–59,013 of them per run.</dd>
+        <dt>Kernel and memory</dt><dd>The connections alone take about 1.63 GB of kernel memory, and the peak was 1,741–1,815 MB of the 2 GB.</dd>
+        <dt>Users see</dt><dd>All three runs pass, with p99 150–248 ms. Between 0.34% and 0.93% of requests got the fast 503: inside the 1% error allowance, but close to it. This is the edge.</dd>
+      </dl>
+    </li>
+    <li>
+      <h4><span>475,000 USERS AND UP</span>Not measured yet</h4>
+      <dl>
+        <dt>Server</dt><dd>The shipped build hasn't been run at 475,000. With the valves already busy at 450,000 and the error budget nearly spent, this is where the team expects it to break.</dd>
+        <dt>Kernel and memory</dt><dd>Each extra 25,000 connections adds roughly 50 MB of kernel memory on this rig, leaving very little of the 2 GB.</dd>
+        <dt>Users see</dt><dd>Unknown until it's run. For comparison, modified versions of the previous leader that held 450,000 failed at 475,000 (<code>explore/rust-port</code>).</dd>
       </dl>
     </li>
     <li>
