@@ -688,7 +688,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
   </div>
   <p>The server's own memory is small next to the kernel's: <strong>32 bytes per connection</strong> in the program itself, against 63 for the previous leader, measured side by side on the Xeon with 60,000 idle connections (experiment 37). That works out to roughly 100 MB less at 340,000 connections, room for about 23,000 more. In the local load-test arena at 50,000 users (under a lighter load than the contest uses), where both servers passed, the whole server peaked at 229 MB against the leader's 255 MB, measured with the lean receive mode that's now an opt-in. That's laptop Docker, not the Xeon, but it's the same direction. Below the valves there are emergency floors as a last resort: under 100 MB free it stops accepting new connections, and under 60 MB it gently closes connections that have been idle for 20 seconds. That beats letting the system's out-of-memory killer end every connection at once.</p>
   <p>One more emergency valve exists but is switched off: <em>deadline shedding</em>. When on, any request that has waited too long in the kernel's queue gets an instant "overloaded" reply instead of a slow one, turning would-be tail latency into a few fast errors inside the contest's 1% error allowance. It looks only at how long the request waited, never at who sent it or what it asks for. In the arena at 350,000 users it turned 35% of requests into errors and still failed on latency, so it stays off.</p>
-  <p>That leaves one memory valve, and it's on: <strong>503s with a budget</strong>. When a backlog of waiting requests builds up while memory is short, the server answers the <em>oldest</em> of them with an instant "503, try again", with no login check and no database work, and keeps the connection open. It looks only at memory and queue length, and in normal load it never fires: in the Xeon test at 10,000 users it stayed idle (experiment 141). The twist is the budget. At most 0.6% of requests may get a 503, plus a one-off burst of 20,000; once the budget is spent, requests are simply served, and drain-first's buffers absorb the backlog. Without a cap, the valve's 503 count grew with load and went over the contest's 1% error limit in four of five runs at 450,000 users on a busier laptop. With no valve at all, 475,000 users ran out of memory. With the cap, every run at 450,000 and 475,000 sent about 20,000 503s, 0.30–0.32% of requests (laptop Docker, 1-minute holds).</p>
+  <p>That leaves one memory valve, and it's on: <strong>503s with a budget</strong>. When a backlog of waiting requests builds up while memory is short, the server answers the <em>oldest</em> of them with an instant "503, try again", with no login check and no database work, and keeps the connection open. It looks only at memory and queue length, and in normal load it never fires: in the Xeon test at 10,000 users it stayed idle (experiment 141). The twist is the budget. At most 0.6% of requests may get a 503, plus a one-off burst of 20,000; once the budget is spent, requests are simply served, and drain-first's buffers absorb the backlog. Without a cap, the valve's 503 count grew with load and went over the contest's 1% error limit in four of five runs at 450,000 users on a busier laptop. With no valve at all, 475,000 users ran out of memory. With the cap, the runs at 450,000 and 475,000 sent 11,800–20,500 503s each, 0.19–0.30% of requests (laptop Docker, 1-minute holds).</p>
   <p>The memory accounting itself was a small investigation. The usual "free memory" figure turned out to overstate headroom by about 1 KB per connection, because some kernel memory looks reclaimable but stays pinned while the socket is open. The server now measures available memory minus that "reclaimable" slice, and its memory valves read that figure.</p>
 </div>
 </section>
@@ -799,13 +799,13 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <tr><td>Server memory per connection vs. previous leader</td><td class="num">32 vs 63 B</td><td>Xeon<span class="hw">experiment 37, 60,000 idle connections</span></td></tr>
       <tr><td>Connection shedding (now off by default)</td><td class="num">0 errors</td><td>Xeon<span class="hw">experiment 6: 129,730 requests, 5,000 users</span></td></tr>
       <tr><td>Peak memory at 50,000 users vs. previous leader</td><td class="num">229 vs 255 MB</td><td>Laptop, Docker<span class="hw">arena 2-minute probe at a lighter-than-contest load, both pass, lean receive mode</span></td></tr>
-      <tr><td>Our highest local pass, contest load</td><td class="num">475,000 users</td><td>Laptop, Docker<span class="hw">the PR's code, 1-minute holds: 2 of 2 runs pass (p99 227–261 ms, 0.30% errors, all budgeted 503s, 1,953–1,962 MB peak); 450,000 passes 2 of 2 (p99 159–177 ms, 0.32%); 400,000 passes at the previous commit (p99 23.7 ms); not an organizer score</span></td></tr>
+      <tr><td>Our highest local pass, contest load</td><td class="num">475,000 users</td><td>Laptop, Docker<span class="hw">the exact build in the PR, 1-minute holds: 2 of 2 runs pass (p99 159–234 ms, 0.29–0.30% errors, all budgeted 503s, 1,955–1,961 MB peak); 450,000 passes 2 of 2 (p99 73–115 ms, 0.19–0.24%); 425,000 (p99 29 ms) and 400,000 (p99 20 ms, 9.3 µs per request) pass with no errors; not an organizer score</span></td></tr>
       <tr><td>Previous leader (Rust #82), same rig</td><td class="num">400,000 users</td><td>Laptop, Docker<span class="hw">p99 679 ms, 1,749 MB peak, 17.0 µs per request; passes every step from 300,000 (4 of 4) to 400,000; killed for running out of memory at 425,000</span></td></tr>
     </tbody>
   </table>
 </div>
 <div class="col">
-  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>ours holds 475,000 users</strong> (two runs out of two) and the previous leader holds 400,000; it's killed for running out of memory at 425,000. At 400,000 ours answers its slowest 1% of requests in 23.7 ms against the leader's 679 ms, with about 150 MB less memory. Three changes got it there: drain-first receiving, the bounded checkpoint, and 503s with a budget instead of hanging up. That's local arm64 with 1-minute holds, not an organizer score.</p>
+  <p>The local arena runs the organizer's load generator against each server, boxed into one CPU, 2 GB and no swap on a laptop, at the contest's real load. On this rig <strong>ours holds 475,000 users</strong> (two runs out of two) and the previous leader holds 400,000; it's killed for running out of memory at 425,000. At 400,000 ours answers its slowest 1% of requests in 20 ms against the leader's 679 ms, about a thirty-fourth, with about 155 MB less memory and 9.3 µs of CPU per request. Three changes got it there: drain-first receiving, the bounded checkpoint, and 503s with a budget instead of hanging up. That's local arm64 with 1-minute holds, not an organizer score.</p>
   <p>One caveat carries over to the real machine. On the Xeon with the contest's kernel, each open connection costs about 4.3 KB of kernel memory, which puts the wall at roughly 340,000 connections on a 2 GB box. Past that the server has to hold users by asking some to reconnect, which costs CPU, so the laptop's 350,000 isn't guaranteed there. A correction along the way: the arena's first user counts used a lighter load, with users pausing 2.5 times longer between requests. Those were withdrawn and re-run, and the numbers above are from the re-run.</p>
   <p>For what happens inside the server at each load level, see <a href="#breaking">how it breaks, step by step</a>.</p>
   <div class="plain"><b>Not yet known</b>The actual score. The load shedding is still being fine-tuned. These probes hold the crowd for 60 seconds, not the scored five minutes, and they ran on a laptop, not the organizer's machine. The organizer's own run decides it.</div>
@@ -818,7 +818,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <div class="col">
   <p class="eyebrow">Turning up the crowd</p>
   <h2>How it breaks, step by step</h2>
-  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze, 350,000 and 375,000 from earlier builds, 400,000 and 425,000 from the PR's previous commit (it differs only in how overload is shed, which didn't engage there), and 450,000 and 475,000 from the PR's current code.</p>
+  <p>A server doesn't fail all at once. Here is what happens inside this one as the crowd grows, rung by rung, from the local arena at the contest's load. Every number is <strong>local arm64 with 1-minute holds</strong>: the server boxed into one CPU and 2 GB on a laptop, with the organizer's load generator next to it. Up to 300,000 users the numbers come from a build from before the freeze, 350,000 and 375,000 from earlier builds, and 400,000 to 475,000 from the exact build in the PR.</p>
 </div>
 <figure class="wide">
   <div class="fig">
@@ -854,7 +854,7 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <line x1="920.0" y1="300" x2="920.0" y2="306" class="ln"/>
 <text x="920.0" y="322" text-anchor="middle" class="mu small">475k</text>
 <text x="505" y="344" text-anchor="middle" class="mu small">simulated users at the contest's load (local arm64, 1-minute holds)</text>
-<path d="M90.0,258.2 L240.9,245.1 L391.8,249.0 L542.7,165.9 L618.2,128.3 L693.6,210.6 L769.1,155.8 L844.5,153.9 L920.0,142.9" class="ln-a"/>
+<path d="M90.0,258.2 L240.9,245.1 L391.8,249.0 L542.7,165.9 L618.2,128.3 L693.6,216.0 L769.1,204.7 L844.5,165.9 L920.0,146.0" class="ln-a"/>
 <circle cx="90.0" cy="258.2" r="5" class="fa"/>
 <text x="100.0" y="248.2" class="small ta">4.4 ms</text>
 <circle cx="240.9" cy="245.1" r="5" class="fa"/>
@@ -865,14 +865,14 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
 <text x="542.7" y="153.9" text-anchor="middle" class="small ta">116 ms</text>
 <circle cx="618.2" cy="128.3" r="5" class="fa"/>
 <text x="618.2" y="150.3" text-anchor="middle" class="small ta">438 ms</text>
-<circle cx="693.6" cy="210.6" r="5" class="fa"/>
-<text x="693.6" y="232.6" text-anchor="middle" class="small ta">24 ms</text>
-<circle cx="769.1" cy="155.8" r="5" class="fa"/>
-<text x="769.1" y="143.8" text-anchor="middle" class="small ta">165 ms</text>
-<circle cx="844.5" cy="153.9" r="5" class="fa"/>
-<text x="844.5" y="175.9" text-anchor="middle" class="small ta">177 ms</text>
-<circle cx="920.0" cy="142.9" r="5" class="fa"/>
-<text x="910.0" y="132.9" text-anchor="end" class="small ta">261 ms</text>
+<circle cx="693.6" cy="216.0" r="5" class="fa"/>
+<text x="693.6" y="238.0" text-anchor="middle" class="small ta">20 ms</text>
+<circle cx="769.1" cy="204.7" r="5" class="fa"/>
+<text x="769.1" y="192.7" text-anchor="middle" class="small ta">29 ms</text>
+<circle cx="844.5" cy="165.9" r="5" class="fa"/>
+<text x="844.5" y="187.9" text-anchor="middle" class="small ta">116 ms</text>
+<circle cx="920.0" cy="146.0" r="5" class="fa"/>
+<text x="910.0" y="136.0" text-anchor="end" class="small ta">234 ms</text>
 <circle cx="618.2" cy="84.2" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
 <circle cx="693.6" cy="49.4" r="5" style="fill:none;stroke:var(--hot);stroke-width:2"/>
 <path d="M618.2,84.2 L693.6,49.4" class="ln-h dash"/>
@@ -896,32 +896,32 @@ static i64 count_likes(eng *e, i64 lo, i64 hi, u32 *counts) {
       <h4><span>350,000–400,000 USERS</span>Still nothing closed: memory has room</h4>
       <dl>
         <dt>Server</dt><dd>All 400,000 connections stay open, and with plenty of memory still free, neither memory valve has anything to do. Each request costs about 10–13 µs of CPU.</dd>
-        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users and 1,488 MB at 400,000, with 1,598 MB in total at the peak on the PR's build.</dd>
-        <dt>Users see</dt><dd>p99 116 ms at 350,000 and 23.7 ms at 400,000 on the PR's build, no errors: both pass. The older rule, which shed by connection count once open connections reached 95% of a 380,000 cap, started hanging up here. On the same test build it made 3,100–5,100 users a second reconnect, pushed CPU to 84–90%, and failed at both 375,000 (p99 2.1 s) and 400,000 (7.2 s). That's why a memory-based rule replaced it, before hanging up was switched off altogether.</dd>
+        <dt>Kernel and memory</dt><dd>1,302 MB of kernel memory at 350,000 users and 1,488 MB at 400,000, with 1,593 MB in total at the peak on the PR's build.</dd>
+        <dt>Users see</dt><dd>p99 116 ms at 350,000 and 20 ms at 400,000 on the PR's build, no errors: both pass. The older rule, which shed by connection count once open connections reached 95% of a 380,000 cap, started hanging up here. On the same test build it made 3,100–5,100 users a second reconnect, pushed CPU to 84–90%, and failed at both 375,000 (p99 2.1 s) and 400,000 (7.2 s). That's why a memory-based rule replaced it, before hanging up was switched off altogether.</dd>
       </dl>
     </li>
     <li>
       <h4><span>425,000 USERS</span>A traffic jam in the kernel, defused</h4>
       <dl>
         <dt>Server</dt><dd>Earlier builds hit a jam here: near the end of the ramp a long database checkpoint stalled the event loop, and around 100,000 requests piled up in the kernel's socket buffers at about 4 KB each until the box ran out of memory (a classic case of <em>bufferbloat</em>). Two changes defused it. Drain-first copies arriving requests out of the kernel at about 0.5 KB each, and the bounded checkpoint keeps every pause short, at most about 100 ms.</dd>
-        <dt>Kernel and memory</dt><dd>Kernel memory for the connections is about 1.58 GB, almost nothing waits in socket buffers, and peak memory was 1,706 MB. CPU sat at about 47%. Nothing was shed and the 503 valve never fired.</dd>
-        <dt>Users see</dt><dd>p99 165 ms with no errors: a pass. The previous leader is killed for running out of memory at this size.</dd>
+        <dt>Kernel and memory</dt><dd>Kernel memory for the connections is about 1.58 GB, almost nothing waits in socket buffers, and peak memory was 1,712 MB. CPU sat at about 43%. Nothing was shed and the 503 valve never fired.</dd>
+        <dt>Users see</dt><dd>p99 29 ms with no errors: a pass. The previous leader is killed for running out of memory at this size.</dd>
       </dl>
     </li>
     <li>
       <h4><span>450,000 USERS</span>The budgeted valve starts working</h4>
       <dl>
-        <dt>Server</dt><dd>Memory is now short enough for the 503 valve to answer the oldest waiting requests: about 20,200 of them per run, which is exactly its 20,000-request burst plus a little of its 0.6% budget. No connection is closed. Each request costs about 11–12 µs of CPU.</dd>
-        <dt>Kernel and memory</dt><dd>The connections take about 1.67 GB of kernel memory, and the peak was 1,842–1,854 MB of the 2 GB.</dd>
-        <dt>Users see</dt><dd>Both runs pass, with p99 159–177 ms and 0.32% errors, all of them fast 503s. Getting here took two detours. With hanging up switched on, this load passed three runs of three but made about 80,000 users reconnect per run. With the 503 valve uncapped, it went over the 1% error limit in four runs of five on a busier laptop.</dd>
+        <dt>Server</dt><dd>Memory is now short enough for the 503 valve to answer the oldest waiting requests: 11,768–15,481 of them per run, all within its one-off burst of 20,000. No connection is closed. Each request costs about 10 µs of CPU.</dd>
+        <dt>Kernel and memory</dt><dd>The connections take about 1.67 GB of kernel memory, and the peak was 1,829–1,844 MB of the 2 GB.</dd>
+        <dt>Users see</dt><dd>Both runs pass, with p99 73–115 ms and 0.19–0.24% errors, all of them fast 503s. Getting here took two detours. With hanging up switched on, this load passed three runs of three but made about 80,000 users reconnect per run. With the 503 valve uncapped, it went over the 1% error limit in four runs of five on a busier laptop.</dd>
       </dl>
     </li>
     <li class="edge">
       <h4><span>475,000 USERS</span>The edge</h4>
       <dl>
-        <dt>Server</dt><dd>The valve spends its burst again (about 20,400 503s per run) and then serves everything; drain-first's buffers soak up the rest of the backlog. CPU sits around 57–62%.</dd>
-        <dt>Kernel and memory</dt><dd>The connections take about 1.77 GB of kernel memory, and the peak was 1,953–1,962 MB: only about 85 MB under the 2 GB limit. With no valve at all, this load ran out of memory.</dd>
-        <dt>Users see</dt><dd>Both runs pass, with p99 227–261 ms and 0.30% errors. With so little memory left, this is the edge; nothing larger has been run on this build.</dd>
+        <dt>Server</dt><dd>The valve spends its whole burst (20,203–20,460 503s per run) and then serves everything; drain-first's buffers soak up the rest of the backlog. CPU sits around 49–52%.</dd>
+        <dt>Kernel and memory</dt><dd>The connections take about 1.77 GB of kernel memory, and the peak was 1,955–1,961 MB: only about 85 MB under the 2 GB limit. With no valve at all, this load ran out of memory.</dd>
+        <dt>Users see</dt><dd>Both runs pass, with p99 159–234 ms and 0.29–0.30% errors. With so little memory left, this is the edge; nothing larger has been run on this build.</dd>
       </dl>
     </li>
     <li>
